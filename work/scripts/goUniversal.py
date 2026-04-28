@@ -27,7 +27,7 @@ elif call('type '+'srun', shell=True, stdout=PIPE, stderr=PIPE) == 0:
 
 # The code uses OpenMP and benefits from up to at least 24 threads
 NTHREADS = 48
-exe = '/Users/antoinebelley/Documents/TRIUMF/imsrg/src/imsrg++'
+exe = '/Users/xinyu/Desktop/imsrg/build/imsrg++'
 
 # Flag to swith between submitting to the scheduler or running in the current shell
 # batch_mode=False
@@ -35,8 +35,6 @@ batch_mode = False
 if 'terminal' in argv[1:]:
   batch_mode = False
 
-# Don't forget to change this. I don't want emails about your calculations...
-mail_address = 'antoine.belley@mail.mcgill.ca'
 
 # This comes in handy if you want to loop over Z
 ELEM = ['n', 'H', 'He', 'Li', 'Be', 'B', 'C', 'N',
@@ -140,8 +138,8 @@ for Z in range(4, 5):
      # ARGS['LECs'] = 'N3LO_EM500'
 
      # EM(1.8/2.0)
-     ARGS['2bme'] = '/Users/antoinebelley/Documents/TRIUMF/Interactions/TwBME-HO_NN-only_N3LO_EM500_srg1.80_hw16_emax18_e2max36.me2j.gz'
-     ARGS['3bme'] = '/Users/antoinebelley/Documents/TRIUMF/Interactions/NO2B_ThBME_EM1.8_2.0_3NFJmax15_IS_hw16_ms18_36_24.stream.bin'
+     ARGS['2bme'] = '/Users/xinyu/Desktop/Forces/2BME-HO_N3LO_EM500_srg1.8_hw16_emax4_e2max8.me2j.gz'
+     ARGS['3bme'] = 'none'
      ARGS['LECs'] = 'EM1.8_2.0'
 
      ARGS["3bme_type"] = "no2b"
@@ -215,8 +213,8 @@ for Z in range(4, 5):
        jobname += '_' + ARGS['core_generator']
      if 'BetaCM' in ARGS:
        jobname += '_' + ARGS['BetaCM']
-     ARGS['flowfile'] = '/Users/antoinebelley/Documents/TRIUMF/results/BCH_' + jobname + '.dat'
-     ARGS['intfile'] = '/Users/antoinebelley/Documents/TRIUMF/results/' + jobname
+     ARGS['flowfile'] = 'output/BCH_' + jobname + '.dat'
+     ARGS['intfile'] = 'output/' + jobname
 
      cmd = ' '.join([exe] + ['%s=%s' % (x, ARGS[x]) for x in ARGS])
      print(cmd)

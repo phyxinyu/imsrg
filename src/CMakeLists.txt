@@ -3,9 +3,8 @@ set(INSTDIR $ENV{HOME})
 set(BLA_VENDOR OpenBLAS)
 # set(CMAKE_SKIP_INSTALL_RPATH ON)
 # set(CMAKE_SYSTEM_PREFIX_PATH $ENV{EBROOTGENTOO})
-set(CMAKE_CURRENT_BINARY_DIR "../build")
 
-option(IMSRG_BUILD_PYTHON_BINDINGS "Build Python bindings" ON)
+option(IMSRG_BUILD_PYTHON_BINDINGS "Build Python bindings" OFF)
 
 # Place to put any settings for quirks of your specific environment
 # e.g. maybe you want a different BLAS, or maybe you need to
@@ -29,9 +28,26 @@ if(IMSRGPLUSPLUS_MAIN_PROJECT AND NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-project(imsrg++ VERSION 0.1.0)
+project(imsrg++ VERSION 0.1.0 LANGUAGES CXX)
 
-find_package(OpenMP REQUIRED)
+if(APPLE)
+    set(HOMEBREW_PREFIX "/opt/homebrew")
+    list(PREPEND CMAKE_PREFIX_PATH
+        "${HOMEBREW_PREFIX}/opt/libomp"
+        "${HOMEBREW_PREFIX}/opt/openblas"
+        "${HOMEBREW_PREFIX}/opt/gsl"
+        "${HOMEBREW_PREFIX}/opt/boost"
+        "${HOMEBREW_PREFIX}/opt/zlib"
+    )
+
+    if(EXISTS "${HOMEBREW_PREFIX}/opt/libomp/include/omp.h" AND EXISTS "${HOMEBREW_PREFIX}/opt/libomp/lib/libomp.dylib")
+        set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -I${HOMEBREW_PREFIX}/opt/libomp/include" CACHE STRING "OpenMP CXX flags")
+        set(OpenMP_CXX_LIB_NAMES "omp" CACHE STRING "OpenMP CXX library names")
+        set(OpenMP_omp_LIBRARY "${HOMEBREW_PREFIX}/opt/libomp/lib/libomp.dylib" CACHE FILEPATH "OpenMP libomp library")
+    endif()
+endif()
+
+find_package(OpenMP REQUIRED COMPONENTS CXX)
 find_package(BLAS REQUIRED)
 find_package(GSL REQUIRED)
 find_package(Boost REQUIRED)
