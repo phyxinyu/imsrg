@@ -5,6 +5,7 @@
 #include "Operator.hh"
 #include "TwoBodyME.hh"
 #include "ThreeBodyME.hh"
+#include "MpiSupport.hh"
 #include "armadillo"
 #include "PhysicalConstants.hh" // for SQRT2
 #include "AngMom.hh"
@@ -211,6 +212,11 @@ namespace Commutator
   {
 
     X.modelspace->PreCalculateSixJ(); // if we already called this, it does nothing.
+    if (imsrg_mpi::Enabled() &&
+        (!(X.IsNumberConserving() and Y.IsNumberConserving()) || X.GetJRank() != 0 || Y.GetJRank() != 0))
+    {
+      imsrg_mpi::Abort("MPI IMSRG(2) currently supports scalar, number-conserving commutators only.");
+    }
 
     if ( X.IsNumberConserving() and Y.IsNumberConserving() ) // X and Y are particle-number conserving
     {
@@ -315,11 +321,21 @@ namespace Commutator
     int z_Trank = X.GetTRank() + Y.GetTRank();
     int z_parity = (X.GetParity() + Y.GetParity()) % 2;
     int z_particlerank = use_imsrg3 ? 3 : 2;
+    if (imsrg_mpi::Enabled())
+    {
+      if (use_imsrg3 || X.GetParticleRank() > 2 || Y.GetParticleRank() > 2 ||
+          X.GetTRank() != 0 || Y.GetTRank() != 0 || X.GetParity() != 0 || Y.GetParity() != 0)
+      {
+        imsrg_mpi::Abort("MPI IMSRG(2) currently supports scalar IMSRG(2) commutators only: IMSRG3=false, rank_T=0, parity=0, particle_rank<=2.");
+      }
+    }
     //    int z_particlerank = std::max(X.GetParticleRank(), Y.GetParticleRank());
     //    if (use_imsrg3)
     //      z_particlerank = std::max(z_particlerank, 3);
     ModelSpace &ms = *(Y.GetModelSpace());
     Operator Z(ms, z_Jrank, z_Trank, z_parity, z_particlerank);
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::EnsureChannelOwnership(ms);
 
 
     if (Z.IsReduced())
@@ -465,6 +481,8 @@ namespace Commutator
       }
 
     } // if imsrg3 and above threshold
+
+    imsrg_mpi::AllreduceOperatorInPlace(Z);
 
     Z.modelspace->scalar_transform_first_pass = false;
     SetSingleThread(save_single_thread);
@@ -648,6 +666,8 @@ namespace Commutator
     //  not entirely clear on what was causing the issue. Maybe some caching magic???
     for (auto &a : Z.modelspace->holes)
     {
+      if (imsrg_mpi::Enabled() && (static_cast<int>(a % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
+        continue;
       Orbit &oa = Z.modelspace->GetOrbit(a);
       Z.ZeroBody += (oa.j2 + 1) * oa.occ * arma::as_scalar( X.OneBody.row(a)*Y.OneBody.col(a) - Y.OneBody.row(a)*X.OneBody.col(a));
     }
@@ -706,6 +726,8 @@ namespace Commutator
     {
       size_t ch_bra = ch_bra_list[ich];
       size_t ch_ket = ch_ket_list[ich];
+      if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*X.modelspace, ch_bra))
+        continue;
       // std::cout << ch_bra << " " << ch_ket << std::endl;
       TwoBodyChannel &tbc_bra = X.modelspace->GetTwoBodyChannel(ch_bra);
       TwoBodyChannel &tbc_ket = X.modelspace->GetTwoBodyChannel(ch_ket);
@@ -781,7 +803,16 @@ namespace Commutator
   void comm111ss(const Operator &X, const Operator &Y, Operator &Z)
   {
     double t_start = omp_get_wtime();
-    Z.OneBody += X.OneBody * Y.OneBody - Y.OneBody * X.OneBody;
+    arma::mat z1 = X.OneBody * Y.OneBody - Y.OneBody * X.OneBody;
+    if (imsrg_mpi::Enabled())
+    {
+      for (arma::uword row = 0; row < z1.n_rows; ++row)
+      {
+        if (static_cast<int>(row % imsrg_mpi::Size()) != imsrg_mpi::Rank())
+          z1.row(row).zeros();
+      }
+    }
+    Z.OneBody += z1;
     X.profiler.timer[__func__] += omp_get_wtime() - t_start;
   }
 
@@ -813,6 +844,8 @@ namespace Commutator
     #pragma omp parallel for
     for (index_t indexi = 0; indexi < norbits; ++indexi)
     {
+      if (imsrg_mpi::Enabled() && (static_cast<int>(indexi % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
+        continue;
       auto i = indexi;
       Orbit &oi = Z.modelspace->GetOrbit(i);
       index_t jmin = Z.IsNonHermitian() ? 0 : i;
@@ -992,6 +1025,8 @@ namespace Commutator
     for (int ich = 0; ich < n_nonzero; ++ich)
     {
       int ch = Z.modelspace->SortedTwoBodyChannels[ich];
+      if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*Z.modelspace, ch))
+        continue;
       TwoBodyChannel &tbc = Z.modelspace->GetTwoBodyChannel(ch);
       auto &X2 = X.TwoBody.GetMatrix(ch, ch);
       auto &Y2 = Y.TwoBody.GetMatrix(ch, ch);
@@ -1096,6 +1131,8 @@ namespace Commutator
     {
       size_t ch_bra = ch_bra_list[ich];
       size_t ch_ket = ch_ket_list[ich];
+      if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*Z.modelspace, ch_bra))
+        continue;
       TwoBodyChannel &tbc_bra = Z.modelspace->GetTwoBodyChannel(ch_bra);
       TwoBodyChannel &tbc_ket = Z.modelspace->GetTwoBodyChannel(ch_ket);
       int J = tbc_bra.J;
@@ -1259,6 +1296,8 @@ namespace Commutator
     {
       int ch_bra = ch_bra_list[ich];
       int ch_ket = ch_ket_list[ich];
+      if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*Z.modelspace, ch_bra))
+        continue;
       TwoBodyChannel &tbc_bra = Z.modelspace->GetTwoBodyChannel(ch_bra);
       TwoBodyChannel &tbc_ket = Z.modelspace->GetTwoBodyChannel(ch_ket);
 
@@ -1903,6 +1942,8 @@ namespace Commutator
       #endif
       for (size_t ch = 0; ch < nch; ++ch)
       {
+        if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsCrossCoupledChannel(*Z.modelspace, ch))
+          continue;
         const TwoBodyChannel_CC &tbc_cc = Z.modelspace->GetTwoBodyChannel_CC(ch);
         index_t nKets_cc = tbc_cc.GetNumberKets();
         size_t nph_kets = tbc_cc.GetKetIndex_hh().size() + tbc_cc.GetKetIndex_ph().size();

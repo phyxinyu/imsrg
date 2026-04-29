@@ -14,6 +14,7 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 option(IMSRG_BUILD_PYTHON_BINDINGS "Build Python bindings" OFF)
 option(USE_ARMADILLO_EXTERN "Use version of armadillo in extern" ON)
+option(IMSRG_USE_MPI "Build optional MPI support for scalar IMSRG(2)" OFF)
 ########################################################################################################################
 ### DECLARE PROJECT
 ########################################################################################################################
@@ -40,6 +41,9 @@ if(APPLE)
 endif()
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
+if(IMSRG_USE_MPI)
+    find_package(MPI REQUIRED COMPONENTS CXX)
+endif()
 set(BLA_VENDOR OpenBLAS)
 find_package(BLAS REQUIRED)
 find_package(GSL REQUIRED)

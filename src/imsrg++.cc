@@ -54,6 +54,7 @@
 #include <string>
 #include <omp.h>
 #include "IMSRG.hh"
+#include "MpiSupport.hh"
 #include "Parameters.hh"
 #include "PhysicalConstants.hh"
 #include "version.hh"
@@ -65,8 +66,15 @@ struct OpFromFile {
 
 int main(int argc, char** argv)
 {
+  imsrg_mpi::Initialize(argc, argv);
+  struct MpiFinalizer
+  {
+    ~MpiFinalizer() { imsrg_mpi::Finalize(); }
+  } mpi_finalizer;
+
   // Default parameters, and everything passed by command line args.
-  std::cout << "######  imsrg++ build version: " << version::BuildVersion() << std::endl;
+  if (imsrg_mpi::IsRoot())
+    std::cout << "######  imsrg++ build version: " << version::BuildVersion() << std::endl;
 
   Parameters parameters(argc,argv);
   if (parameters.help_mode) return 0;
@@ -105,6 +113,7 @@ int main(int argc, char** argv)
   bool imsrg3_at_end = parameters.s("imsrg3_at_end") == "true";
   bool imsrg3_no_qqq = parameters.s("imsrg3_no_qqq") == "true";
   bool write_omega = parameters.s("write_omega") == "true";
+  bool mpi_imsrg2 = parameters.s("mpi_imsrg2") == "true";
   bool freeze_occupations = parameters.s("freeze_occupations")=="true";
   bool discard_no2b_from_3n = parameters.s("discard_no2b_from_3n")=="true";
   bool hunter_gatherer = parameters.s("hunter_gatherer") == "true";
@@ -119,6 +128,14 @@ int main(int argc, char** argv)
   bool brueckner_restart = false;
   bool write_HO_ops = parameters.s("write_HO_ops") == "true";  // added by Antoine Belley
   bool write_HF_ops = parameters.s("write_HF_ops") == "true";  // added by Antoine Belley
+
+  imsrg_mpi::SetEnabled(mpi_imsrg2);
+  if (mpi_imsrg2 && imsrg_mpi::Enabled() && imsrg_mpi::IsRoot())
+  {
+    std::cout << "Using experimental MPI IMSRG(2) scalar flow with "
+              << imsrg_mpi::Size()
+              << " ranks (owner-compute, replicated TwoBodyME storage)." << std::endl;
+  }
 
   int eMax = parameters.i("emax");
   int lmax = parameters.i("lmax"); // so far I only use this with atomic systems.
@@ -171,6 +188,19 @@ int main(int argc, char** argv)
 
   std::vector<Operator> ops;
   std::vector<std::string> spwf = parameters.v("SPWF");
+
+  if (imsrg_mpi::Enabled())
+  {
+    if (IMSRG3 || imsrg3_at_end || perturbative_triples)
+      imsrg_mpi::Abort("mpi_imsrg2=true currently requires IMSRG3=false, imsrg3_at_end=false, perturbative_triples=false.");
+    if (!(method == "magnus" || method == "magnus_euler"))
+      imsrg_mpi::Abort("mpi_imsrg2=true currently supports method=magnus or method=magnus_euler only.");
+    if (write_omega || scratch != "")
+      imsrg_mpi::Abort("mpi_imsrg2=true currently requires write_omega=false and scratch=\"\".");
+    if (!opnames.empty() || !opsfromfile.empty() || !opnamesPT1.empty() ||
+        !opnamesRPA.empty() || !opnamesTDA.empty() || write_HO_ops || write_HF_ops)
+      imsrg_mpi::Abort("mpi_imsrg2=true currently supports the Hamiltonian flow only, not external operator transforms.");
+  }
 
   using PhysConst::PROTON_RCH2;
   using PhysConst::NEUTRON_RCH2;
@@ -1289,6 +1319,8 @@ int main(int argc, char** argv)
 
 
   // Write the output
+  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+    return 0;
 
   // If we're doing a shell model interaction, write the
   // interaction files to disk.

@@ -2,6 +2,7 @@
 #include "Generator.hh"
 #include "Commutator.hh"
 #include "Operator.hh"
+#include "MpiSupport.hh"
 #include "PhysicalConstants.hh" // for HBARC and M_NUCLEON
 
 #include "omp.h"
@@ -33,12 +34,17 @@ void Generator::SetDenominatorPartitioning(std::string dp)
 void Generator::Update(Operator& H_s, Operator& Eta_s)
 {
    Eta_s.Erase();
+   if (imsrg_mpi::Enabled())
+      imsrg_mpi::EnsureChannelOwnership(*H_s.GetModelSpace());
    AddToEta(H_s,Eta_s);
+   if (imsrg_mpi::Enabled() && use_isospin_averaging)
+      imsrg_mpi::Abort("MPI IMSRG(2) does not yet support generator isospin averaging.");
    if (use_isospin_averaging)
    {
       // Eta_s = Eta_s.DoIsospinAveraging();
       Eta_s = Eta_s.UndoNormalOrdering().DoIsospinAveraging().DoNormalOrdering();
    }
+   imsrg_mpi::AllreduceOperatorInPlace(Eta_s);
 }
 
 
@@ -262,6 +268,8 @@ void Generator::ConstructGenerator_SingleRef(std::function<double (double,double
    {
       for ( auto& i : VectorUnion(H->modelspace->valence, H->modelspace->qspace) )
       {
+         if (imsrg_mpi::Enabled() && (static_cast<int>(i % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
+            continue;
          double denominator = Get1bDenominator(i,a);
          Eta->OneBody(i,a) = etafunc( H->OneBody(i,a), denominator);
          Eta->OneBody(a,i) = - Eta->OneBody(i,a);
@@ -274,6 +282,8 @@ void Generator::ConstructGenerator_SingleRef(std::function<double (double,double
    {
       size_t ch_bra = iter.first[0];
       size_t ch_ket = iter.first[1];
+      if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*H->modelspace, ch_bra))
+         continue;
       TwoBodyChannel& tbc_bra = H->modelspace->GetTwoBodyChannel(ch_bra);
       TwoBodyChannel& tbc_ket = H->modelspace->GetTwoBodyChannel(ch_ket);
       arma::mat& ETA2 =  iter.second;
@@ -382,6 +392,8 @@ void Generator::ConstructGenerator_ShellModel(std::function<double (double,doubl
    {
       for (auto& i : VectorUnion( H->modelspace->valence, H->modelspace->qspace ) )
       {
+         if (imsrg_mpi::Enabled() && (static_cast<int>(i % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
+            continue;
          if (i==a) continue;
          double denominator = Get1bDenominator(i,a);
          Eta->OneBody(i,a) = eta_func(H->OneBody(i,a), denominator);
@@ -396,6 +408,8 @@ void Generator::ConstructGenerator_ShellModel(std::function<double (double,doubl
    int nchan = H->modelspace->GetNumberTwoBodyChannels();
    for (int ch=0;ch<nchan;++ch)
    {
+      if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*H->modelspace, ch))
+         continue;
       TwoBodyChannel& tbc = H->modelspace->GetTwoBodyChannel(ch);
       arma::mat& ETA2 =  Eta->TwoBody.GetMatrix(ch);
       arma::mat& H2 =  H->TwoBody.GetMatrix(ch);
@@ -513,21 +527,25 @@ void Generator::ConstructGenerator_ShellModel_NpNh(std::function<double(double,d
 
   for ( auto& c : H->modelspace->core )
   {
-   for ( auto& cprime : H->modelspace->core )
-   {
-     if (cprime<=c) continue;
-     double denominator = Get1bDenominator(c,cprime);
-     Eta->OneBody(c,cprime) = eta_func(H->OneBody(c,cprime), denominator );
-     Eta->OneBody(cprime,c) = - Eta->OneBody(c,cprime);
-   }
+    if (imsrg_mpi::Enabled() && (static_cast<int>(c % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
+      continue;
+    for ( auto& cprime : H->modelspace->core )
+    {
+      if (cprime<=c) continue;
+      double denominator = Get1bDenominator(c,cprime);
+      Eta->OneBody(c,cprime) = eta_func(H->OneBody(c,cprime), denominator );
+      Eta->OneBody(cprime,c) = - Eta->OneBody(c,cprime);
+    }
   }
 
   int nchan = H->modelspace->GetNumberTwoBodyChannels();
   for (int ch=0;ch<nchan;++ch)
   {
-     TwoBodyChannel& tbc = H->modelspace->GetTwoBodyChannel(ch);
-     arma::mat& ETA2 =  Eta->TwoBody.GetMatrix(ch);
-     arma::mat& H2 =  H->TwoBody.GetMatrix(ch);
+    if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*H->modelspace, ch))
+      continue;
+    TwoBodyChannel& tbc = H->modelspace->GetTwoBodyChannel(ch);
+    arma::mat& ETA2 =  Eta->TwoBody.GetMatrix(ch);
+    arma::mat& H2 =  H->TwoBody.GetMatrix(ch);
   // decouple Gamma_qcvc'
      for (auto& iket : tbc.GetKetIndex_vc())
      {
@@ -564,6 +582,8 @@ void Generator::ConstructGenerator_HartreeFock()
    // One body piece -- eliminate ph bits
    for (auto i : H->modelspace->all_orbits)
    {
+      if (imsrg_mpi::Enabled() && (static_cast<int>(i % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
+         continue;
       for (auto j : H->modelspace->all_orbits)
       {
          if (j>i) continue;
@@ -586,6 +606,8 @@ void Generator::ConstructGenerator_1PA(std::function<double(double,double)>& eta
    {
       for (auto& i : VectorUnion( H->modelspace->valence, H->modelspace->qspace ) )
       {
+         if (imsrg_mpi::Enabled() && (static_cast<int>(i % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
+            continue;
          if (i==a) continue;
          double denominator = Get1bDenominator(i,a);
          Eta->OneBody(i,a) = eta_func(H->OneBody(i,a),denominator);
@@ -599,6 +621,8 @@ void Generator::ConstructGenerator_1PA(std::function<double(double,double)>& eta
    int nchan = H->modelspace->GetNumberTwoBodyChannels();
    for (int ch=0;ch<nchan;++ch)
    {
+      if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*H->modelspace, ch))
+         continue;
       TwoBodyChannel& tbc = H->modelspace->GetTwoBodyChannel(ch);
       arma::mat& ETA2 =  Eta->TwoBody.GetMatrix(ch);
       arma::mat& H2 =  H->TwoBody.GetMatrix(ch);

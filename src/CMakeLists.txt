@@ -5,6 +5,7 @@ set(BLA_VENDOR OpenBLAS)
 # set(CMAKE_SYSTEM_PREFIX_PATH $ENV{EBROOTGENTOO})
 
 option(IMSRG_BUILD_PYTHON_BINDINGS "Build Python bindings" OFF)
+option(IMSRG_USE_MPI "Build optional MPI support for scalar IMSRG(2)" OFF)
 
 # Place to put any settings for quirks of your specific environment
 # e.g. maybe you want a different BLAS, or maybe you need to
@@ -48,6 +49,9 @@ if(APPLE)
 endif()
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
+if(IMSRG_USE_MPI)
+    find_package(MPI REQUIRED COMPONENTS CXX)
+endif()
 find_package(BLAS REQUIRED)
 find_package(GSL REQUIRED)
 find_package(Boost REQUIRED)
@@ -281,6 +285,22 @@ target_link_libraries(
 )
 
 add_library(
+    MpiSupport
+    MpiSupport.hh MpiSupport.cc
+)
+target_link_libraries(
+    MpiSupport
+    PUBLIC
+    armadillo
+    ModelSpace
+    Operator
+)
+if(IMSRG_USE_MPI)
+    target_compile_definitions(MpiSupport PUBLIC IMSRG_USE_MPI)
+    target_link_libraries(MpiSupport PUBLIC MPI::MPI_CXX)
+endif()
+
+add_library(
     Version
     version.hh
     ${CMAKE_CURRENT_BINARY_DIR}/version.cc
@@ -323,6 +343,7 @@ target_link_libraries(
     BCH
     PUBLIC
     Operator
+    MpiSupport
     PRIVATE
     Commutator
     OpenMP::OpenMP_CXX
@@ -339,6 +360,7 @@ target_link_libraries(
     Generator
     IMSRGProfiler
     ReadWrite
+    MpiSupport
     PRIVATE
     BCH
     Commutator
@@ -434,6 +456,7 @@ target_link_libraries(
     Operator
     TwoBodyME
     ThreeLegME
+    MpiSupport
     PRIVATE
     OpenMP::OpenMP_CXX
     # ${ARMADILLO_LIBRARIES}
@@ -578,6 +601,7 @@ target_link_libraries(
     PUBLIC
     ModelSpace
     Operator
+    MpiSupport
     PRIVATE
     GSL::gsl
     imsrg_util
@@ -699,6 +723,7 @@ add_library(
     UnitTest
     PhysicalConstants
     RPA
+    MpiSupport
 )
 target_link_libraries(
     IMSRG
@@ -723,6 +748,7 @@ target_link_libraries(
     UnitTest
     PhysicalConstants
     RPA
+    MpiSupport
 )
 set_target_properties(IMSRG PROPERTIES SUFFIX ".so")
 
@@ -738,6 +764,7 @@ target_link_libraries(
     Parameters
     PhysicalConstants
     Version
+    MpiSupport
     OpenMP::OpenMP_CXX
 )
 

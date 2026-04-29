@@ -2,6 +2,7 @@
 #include "Commutator.hh"
 #include "BCH.hh"
 #include "Operator.hh"
+#include "MpiSupport.hh"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -55,6 +56,8 @@ void IMSRGSolver::NewOmega()
   std::cout << std::endl;
   if (scratchdir != "")
   {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("MPI IMSRG(2) does not yet support scratch/write_omega storage. Run with scratch=\"\" and write_omega=false.");
 
     if (scratchdir.find("/dev/null") == std::string::npos)
     {
@@ -190,6 +193,8 @@ void IMSRGSolver::SetDenominatorPartitioning(std::string dp)
 void IMSRGSolver::SetFlowFile(std::string str)
 {
   flowfile = str;
+  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+    return;
   std::ofstream flowf;
   if (flowfile != "")
   {
@@ -200,6 +205,10 @@ void IMSRGSolver::SetFlowFile(std::string str)
 
 void IMSRGSolver::Solve()
 {
+  if (imsrg_mpi::Enabled() && !(method == "magnus_euler" or method == "magnus"))
+  {
+    imsrg_mpi::Abort("MPI IMSRG(2) currently supports method=magnus or method=magnus_euler only.");
+  }
 
   if (s < 1e-4)
     WriteFlowStatusHeader(std::cout);
@@ -1211,6 +1220,8 @@ double IMSRGSolver::CalculatePerturbativeTriples(Operator &Op_0)
 
 void IMSRGSolver::WriteFlowStatus(std::string fname)
 {
+  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+    return;
   if (fname != "")
   {
     std::ofstream ff(fname, std::ios::app);
@@ -1219,6 +1230,8 @@ void IMSRGSolver::WriteFlowStatus(std::string fname)
 }
 void IMSRGSolver::WriteFlowStatus(std::ostream &f)
 {
+  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+    return;
   if (f.good())
   {
     int fwidth = 16;
@@ -1248,6 +1261,8 @@ void IMSRGSolver::WriteFlowStatus(std::ostream &f)
 
 void IMSRGSolver::WriteFlowStatusHeader(std::string fname)
 {
+  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+    return;
   std::ofstream ff;
   if (fname != "")
     ff.open(fname, std::ios::app);
@@ -1255,6 +1270,8 @@ void IMSRGSolver::WriteFlowStatusHeader(std::string fname)
 }
 void IMSRGSolver::WriteFlowStatusHeader(std::ostream &f)
 {
+  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+    return;
   if (f.good())
   {
     int fwidth = 16;
