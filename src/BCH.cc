@@ -1,6 +1,7 @@
 
 #include "BCH.hh"
 #include "Commutator.hh"
+#include "MpiSupport.hh"
 
 namespace BCH
 {
@@ -102,8 +103,8 @@ namespace BCH
     double t_start = omp_get_wtime();
     int max_iter = 40;
     int warn_iter = 12;
-    double nx = OpIn.Norm();
-    double ny = Omega.Norm();
+    double nx = imsrg_mpi::Norm(OpIn);
+    double ny = imsrg_mpi::Norm(Omega);
     Operator OpOut = OpIn;
     if ((OpOut.GetNumberLegs() % 2 == 0) and OpOut.GetParticleRank() < 2)
     {
@@ -191,17 +192,18 @@ namespace BCH
 
         OpOut += factorial_denom * OpNested;
 
+        double nested_norm = imsrg_mpi::Norm(OpNested);
         if (OpOut.rank_J > 0)
         {
           auto id5 = OpOut.modelspace->GetOrbitIndex(0,2,5,+1);
           std::cout << "Tensor BCH, i=" << i << "  Norm = " << std::setw(12) << std::setprecision(8) << std::fixed << OpNested.OneBodyNorm() << " "
                     << std::setw(12) << std::setprecision(8) << std::fixed << OpNested.TwoBodyNorm() << " "
                     << std::setw(12) << std::setprecision(8) << std::fixed << OpNested.ThreeBody.Norm() << " "
-                    << std::setw(12) << std::setprecision(8) << std::fixed << OpNested.Norm() << std::endl;
+                    << std::setw(12) << std::setprecision(8) << std::fixed << nested_norm << std::endl;
 //                    << std::setw(12) << std::setprecision(8) << std::fixed << OpNested.Norm() << "    d5d5 = " << OpNested.OneBody(id5,id5) << " sum " << OpOut.OneBody(id5,id5) << std::endl;
         }
         epsilon *= i + 1;
-        if (OpNested.Norm() < epsilon)
+        if (nested_norm < epsilon)
           break;
         if (i == warn_iter)
           std::cout << "Warning: BCH_Transform not converged after " << warn_iter << " nested commutators" << std::endl;
@@ -282,8 +284,8 @@ namespace BCH
   Operator BCH_Product(Operator &X, Operator &Y)
   {
     double tstart = omp_get_wtime();
-    double nx = X.Norm();
-    double ny = Y.Norm();
+    double nx = imsrg_mpi::Norm(X);
+    double ny = imsrg_mpi::Norm(Y);
     std::vector<double> bernoulli = {1.0, -0.5, 1. / 6, 0.0, -1. / 30, 0.0, 1. / 42, 0, -1. / 30};
     std::vector<double> factorial = {1.0, 1.0, 2.0, 6.0, 24., 120., 720., 5040., 40320.};
 
@@ -300,7 +302,7 @@ namespace BCH
     }
     Operator Nested = Commutator::Commutator(Y, X); // [Y,X]
 
-    double nxy = Nested.Norm();
+    double nxy = imsrg_mpi::Norm(Nested);
     // We assume X is small, but just in case, we check if we should include the [X,[X,Y]] term.
     if (nxy * nx > bch_product_threshold)
     {
@@ -354,7 +356,7 @@ namespace BCH
         Nested += Op_2b1b;
       }
 
-      nxy = Nested.Norm();
+      nxy = imsrg_mpi::Norm(Nested);
     }
 
     Commutator::use_imsrg3 = _save_imsrg3; // set it back to how it was.

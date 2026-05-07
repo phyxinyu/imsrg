@@ -1,7 +1,10 @@
 
 #include "TwoBodyME.hh"
 #include "AngMom.hh"
+#include "MpiSupport.hh"
 #include "PhysicalConstants.hh" // for SQRT2
+#include <sstream>
+#include <stdexcept>
 //#ifndef SQRT2
 //  #define SQRT2 1.4142135623730950488
 //#endif
@@ -57,6 +60,16 @@ TwoBodyME::TwoBodyME(ModelSpace* ms, int rJ, int rT, int p)
      if (not this->IsAllocated() )
      {
         *this = rhs;
+        if (imsrg_mpi::OwnerOnlyStorageEnabled())
+        {
+          for (auto it = MatEl.begin(); it != MatEl.end();)
+          {
+            if (imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, it->first))
+              ++it;
+            else
+              it = MatEl.erase(it);
+          }
+        }
      }
      else
      {
@@ -76,14 +89,24 @@ TwoBodyME::TwoBodyME(ModelSpace* ms, int rJ, int rT, int p)
    if (not this->IsAllocated() )
    {
       *this = rhs * (-1.0);
+      if (imsrg_mpi::OwnerOnlyStorageEnabled())
+      {
+        for (auto it = MatEl.begin(); it != MatEl.end();)
+        {
+          if (imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, it->first))
+            ++it;
+          else
+            it = MatEl.erase(it);
+        }
+      }
    }
    else
    {
-      for ( auto& itmat : rhs.MatEl )
+      for ( auto& itmat : MatEl )
       {
          auto ch_bra = itmat.first[0];
          auto ch_ket = itmat.first[1];
-         GetMatrix(ch_bra,ch_ket) -= itmat.second;
+         itmat.second -= rhs.GetMatrix(ch_bra,ch_ket);
       }
    }
    return *this;
@@ -106,6 +129,9 @@ void TwoBodyME::Allocate()
 //        if ( (tbc_bra.J+tbc_ket.J)<rank_J ) continue;
         if ( std::abs(tbc_bra.Tz-tbc_ket.Tz)!=rank_T ) continue; // we don't couple to T, so rank_T really means |delta Tz|
         if ( (tbc_bra.parity + tbc_ket.parity + parity)%2>0 ) continue;
+        if (imsrg_mpi::OwnerOnlyStorageEnabled() and
+            not imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, {ch_bra, ch_ket}))
+          continue;
         MatEl[{ch_bra,ch_ket}] =  arma::mat(tbc_bra.GetNumberKets(), tbc_ket.GetNumberKets(), arma::fill::zeros);
      }
   }
@@ -141,6 +167,59 @@ bool TwoBodyME::IsAllocated()const
    return allocated;
 }
 
+bool TwoBodyME::HasMatrix(size_t chbra, size_t chket) const
+{
+   return MatEl.find({chbra, chket}) != MatEl.end();
+}
+
+bool TwoBodyME::HasMatrix(std::array<size_t,2> a) const
+{
+   return HasMatrix(a[0], a[1]);
+}
+
+arma::mat& TwoBodyME::GetMatrix(size_t chbra, size_t chket)
+{
+   auto it = MatEl.find({chbra, chket});
+   if (it == MatEl.end())
+   {
+      std::ostringstream oss;
+      oss << "TwoBodyME missing matrix (" << chbra << "," << chket << ")";
+      if (imsrg_mpi::OwnerOnlyStorageEnabled())
+        oss << " on MPI rank " << imsrg_mpi::Rank() << ". Prefetch the matrix before reading, or send write contributions to the owner.";
+      throw std::out_of_range(oss.str());
+   }
+   return it->second;
+}
+
+arma::mat& TwoBodyME::GetMatrix(size_t ch)
+{
+   return GetMatrix(ch, ch);
+}
+
+arma::mat& TwoBodyME::GetMatrix(std::array<size_t,2> a)
+{
+   return GetMatrix(a[0], a[1]);
+}
+
+const arma::mat& TwoBodyME::GetMatrix(size_t chbra, size_t chket) const
+{
+   auto it = MatEl.find({chbra, chket});
+   if (it == MatEl.end())
+   {
+      std::ostringstream oss;
+      oss << "TwoBodyME missing matrix (" << chbra << "," << chket << ")";
+      if (imsrg_mpi::OwnerOnlyStorageEnabled())
+        oss << " on MPI rank " << imsrg_mpi::Rank() << ". Prefetch the matrix before reading.";
+      throw std::out_of_range(oss.str());
+   }
+   return it->second;
+}
+
+const arma::mat& TwoBodyME::GetMatrix(size_t ch) const
+{
+   return GetMatrix(ch, ch);
+}
+
 
 /// This returns the matrix element times a factor \f$ \sqrt{(1+\delta_{ij})(1+\delta_{kl})} \f$
 double TwoBodyME::GetTBME(int ch_bra, int ch_ket, int a, int b, int c, int d) const
@@ -173,9 +252,13 @@ double TwoBodyME::GetTBME_norm(int ch_bra, int ch_ket, int a, int b, int c, int 
    if (c>d) phase *= ket.Phase(tbc_ket.J);
    if (ch_bra > ch_ket)
    {
+     if (imsrg_mpi::OwnerOnlyStorageEnabled() and not HasMatrix(ch_ket, ch_bra))
+       return 0;
      return hermitian ?   phase * modelspace->phase(tbc_bra.J-tbc_ket.J) * GetMatrix(ch_ket,ch_bra)(ket_ind,bra_ind)
                       : - phase * modelspace->phase(tbc_bra.J-tbc_ket.J) * GetMatrix(ch_ket,ch_bra)(ket_ind,bra_ind);
    }
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and not HasMatrix(ch_bra, ch_ket))
+     return 0;
    return phase * GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);
 }
 
@@ -199,6 +282,10 @@ void TwoBodyME::SetTBME(int ch_bra, int ch_ket, int a, int b, int c, int d, doub
      if (antihermitian) phase *= -1;
    }
 // end new lines
+
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and
+       not imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, {static_cast<size_t>(ch_bra), static_cast<size_t>(ch_ket)}))
+      return;
 
    GetMatrix(ch_bra,ch_ket)(bra_ind,ket_ind) = phase * tbme;
    if (ch_ket != ch_bra) return;
@@ -226,6 +313,9 @@ void TwoBodyME::AddToTBME(int ch_bra, int ch_ket, int a, int b, int c, int d, do
     std::swap(bra_ind,ket_ind);
     phase *= modelspace->phase(tbc_bra.J-tbc_ket.J);
    }
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and
+       not imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, {static_cast<size_t>(ch_bra), static_cast<size_t>(ch_ket)}))
+      return;
 //   cout << "Getting Matrix " << ch_bra << "," << ch_ket << "(" << bra_ind << "," << ket_ind
 //        << "), dimension = " << GetMatrix(ch_bra,ch_ket).n_rows << "x" << GetMatrix(ch_bra,ch_ket).n_cols << endl;
    GetMatrix(ch_bra,ch_ket)(bra_ind,ket_ind) += phase * tbme;
@@ -249,6 +339,9 @@ void TwoBodyME::AddToTBMENonHermNonNormalized(int ch_bra, int ch_ket, int a, int
    if (c>d) phase *= tbc_ket.GetKet(ket_ind).Phase(tbc_ket.J);
    if (a==b) phase *= 1.0 / PhysConst::SQRT2;
    if (c==d) phase *= 1.0 / PhysConst::SQRT2;
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and
+       not imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, {static_cast<size_t>(ch_bra), static_cast<size_t>(ch_ket)}))
+      return;
 //   cout << "Getting Matrix " << ch_bra << "," << ch_ket << "(" << bra_ind << "," << ket_ind
 //        << "), dimension = " << GetMatrix(ch_bra,ch_ket).n_rows << "x" << GetMatrix(ch_bra,ch_ket).n_cols << endl;
    GetMatrix(ch_bra,ch_ket)(bra_ind,ket_ind) += phase * tbme;
@@ -269,11 +362,16 @@ void TwoBodyME::AddToTBME(int ch_bra, int ch_ket, Ket& bra, Ket& ket, double tbm
 
 double TwoBodyME::GetTBME_norm(int ch_bra, int ch_ket, int ibra, int iket) const
 {
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and not HasMatrix(ch_bra, ch_ket))
+      return 0;
    return GetMatrix(ch_bra,ch_ket)(ibra,iket);
 }
 
 void TwoBodyME::SetTBME(int ch_bra, int ch_ket, int ibra, int iket, double tbme)
 {
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and
+       not imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, {static_cast<size_t>(ch_bra), static_cast<size_t>(ch_ket)}))
+      return;
    GetMatrix(ch_bra,ch_ket)(ibra,iket) = tbme;
    if (IsHermitian() and ch_bra==ch_ket)
       GetMatrix(ch_ket,ch_bra)(iket,ibra) = tbme;
@@ -288,6 +386,9 @@ void TwoBodyME::AddToTBME(int ch_bra, int ch_ket, int ibra, int iket, double tbm
      std::swap(ibra,iket);
      tbme *= modelspace->phase( modelspace->GetTwoBodyChannel(ch_bra).J - modelspace->GetTwoBodyChannel(ch_ket).J);
    }
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and
+       not imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, {static_cast<size_t>(ch_bra), static_cast<size_t>(ch_ket)}))
+      return;
    GetMatrix(ch_bra,ch_ket)(ibra,iket) += tbme;
 
    if (ch_bra==ch_ket and ibra!=iket)
@@ -301,6 +402,9 @@ void TwoBodyME::AddToTBME(int ch_bra, int ch_ket, int ibra, int iket, double tbm
 
 void TwoBodyME::AddToTBMENonHerm(int ch_bra, int ch_ket, int ibra, int iket, double tbme)
 {
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and
+       not imsrg_mpi::OwnsTwoBodyMatrix(*modelspace, {static_cast<size_t>(ch_bra), static_cast<size_t>(ch_ket)}))
+      return;
    GetMatrix(ch_bra,ch_ket)(ibra,iket) += tbme;
 }
 
@@ -442,6 +546,12 @@ void TwoBodyME::GetTBME_J_norm_twoOps(const TwoBodyME& OtherTBME, int j_bra, int
      phase *=  modelspace->phase(tbc_bra.J-tbc_ket.J) ;
      std::swap(ch_bra,ch_ket);
      std::swap(bra_ind,ket_ind);
+   }
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and not HasMatrix(ch_bra, ch_ket))
+   {
+     tbme_this = 0;
+     tbme_other = 0;
+     return;
    }
    tbme_this =  phase * GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);
    tbme_other =  phase * OtherTBME.GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);

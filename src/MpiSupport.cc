@@ -4,11 +4,13 @@
 
 #include "MpiSupport.hh"
 
+#include "AngMom.hh"
 #include "ModelSpace.hh"
 #include "Operator.hh"
 #include "TwoBodyME.hh"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -24,6 +26,7 @@
 namespace
 {
   bool mpi_enabled = false;
+  bool owner_only_storage = false;
   bool mpi_initialized_by_us = false;
   int mpi_rank = 0;
   int mpi_size = 1;
@@ -79,6 +82,32 @@ namespace
       rank_load[rank] += entry.first;
     }
     return owner;
+  }
+
+  std::vector<std::array<std::size_t, 2>> MatrixKeys(const TwoBodyME& two_body)
+  {
+    std::vector<std::array<std::size_t, 2>> keys;
+    if (two_body.modelspace == nullptr)
+      return keys;
+
+    std::size_t nchannels = two_body.modelspace->GetNumberTwoBodyChannels();
+    keys.reserve(nchannels);
+    for (std::size_t ch_bra = 0; ch_bra < nchannels; ++ch_bra)
+    {
+      TwoBodyChannel& tbc_bra = two_body.modelspace->GetTwoBodyChannel(ch_bra);
+      for (std::size_t ch_ket = ch_bra; ch_ket < nchannels; ++ch_ket)
+      {
+        TwoBodyChannel& tbc_ket = two_body.modelspace->GetTwoBodyChannel(ch_ket);
+        if (!AngMom::Triangle(tbc_bra.J, tbc_ket.J, two_body.rank_J))
+          continue;
+        if (std::abs(tbc_bra.Tz - tbc_ket.Tz) != two_body.rank_T)
+          continue;
+        if ((tbc_bra.parity + tbc_ket.parity + two_body.parity) % 2 > 0)
+          continue;
+        keys.push_back({ch_bra, ch_ket});
+      }
+    }
+    return keys;
   }
 }
 
@@ -138,7 +167,17 @@ namespace imsrg_mpi
 
   bool Enabled()
   {
-    return mpi_enabled && IsCompiledWithMPI() && mpi_size > 1;
+    return mpi_enabled && IsCompiledWithMPI();
+  }
+
+  void SetOwnerOnlyStorage(bool enabled)
+  {
+    owner_only_storage = enabled && Enabled();
+  }
+
+  bool OwnerOnlyStorageEnabled()
+  {
+    return owner_only_storage && Enabled();
   }
 
   bool Initialized()
@@ -234,6 +273,11 @@ namespace imsrg_mpi
     return !Enabled() || CrossCoupledChannelOwner(modelspace, ch) == Rank();
   }
 
+  bool OwnsTwoBodyMatrix(ModelSpace& modelspace, const std::array<std::size_t, 2>& key)
+  {
+    return !OwnerOnlyStorageEnabled() || TwoBodyChannelOwner(modelspace, key[0]) == Rank();
+  }
+
   void AllreduceInPlace(double& value)
   {
 #ifdef IMSRG_USE_MPI
@@ -263,6 +307,26 @@ namespace imsrg_mpi
 #endif
   }
 
+  void BroadcastMatrixFromRank(arma::mat& matrix, int root)
+  {
+#ifdef IMSRG_USE_MPI
+    if (Enabled() && matrix.n_elem > 0)
+    {
+      arma::uword offset = 0;
+      const arma::uword max_count = static_cast<arma::uword>(std::numeric_limits<int>::max());
+      while (offset < matrix.n_elem)
+      {
+        arma::uword count = std::min(max_count, matrix.n_elem - offset);
+        MPI_Bcast(matrix.memptr() + offset, static_cast<int>(count), MPI_DOUBLE, root, MPI_COMM_WORLD);
+        offset += count;
+      }
+    }
+#else
+    (void)matrix;
+    (void)root;
+#endif
+  }
+
   void AllreduceTwoBodyInPlace(TwoBodyME& two_body)
   {
     if (!Enabled() || !two_body.IsAllocated())
@@ -278,5 +342,118 @@ namespace imsrg_mpi
     AllreduceInPlace(op.ZeroBody);
     AllreduceInPlace(op.OneBody);
     AllreduceTwoBodyInPlace(op.TwoBody);
+  }
+
+  void RestrictOperatorToOwnedChannels(Operator& op)
+  {
+    if (!OwnerOnlyStorageEnabled() || !op.TwoBody.IsAllocated())
+      return;
+
+    EnsureChannelOwnership(*op.GetModelSpace());
+    for (auto it = op.TwoBody.MatEl.begin(); it != op.TwoBody.MatEl.end();)
+    {
+      if (OwnsTwoBodyMatrix(*op.GetModelSpace(), it->first))
+        ++it;
+      else
+        it = op.TwoBody.MatEl.erase(it);
+    }
+  }
+
+  void PrefetchTwoBodyMatrices(Operator& op)
+  {
+    if (!OwnerOnlyStorageEnabled() || !op.TwoBody.IsAllocated())
+      return;
+
+    ModelSpace& modelspace = *op.GetModelSpace();
+    EnsureChannelOwnership(modelspace);
+    for (const auto& key : MatrixKeys(op.TwoBody))
+    {
+      std::size_t ch_bra = key[0];
+      std::size_t ch_ket = key[1];
+      TwoBodyChannel& tbc_bra = modelspace.GetTwoBodyChannel(ch_bra);
+      TwoBodyChannel& tbc_ket = modelspace.GetTwoBodyChannel(ch_ket);
+      int owner = TwoBodyChannelOwner(modelspace, ch_bra);
+
+      auto it = op.TwoBody.MatEl.find(key);
+      if (it == op.TwoBody.MatEl.end())
+      {
+        it = op.TwoBody.MatEl.emplace(
+          key, arma::mat(tbc_bra.GetNumberKets(), tbc_ket.GetNumberKets(), arma::fill::zeros)).first;
+      }
+      BroadcastMatrixFromRank(it->second, owner);
+    }
+  }
+
+  void ClearTwoBodyCache(Operator& op)
+  {
+    RestrictOperatorToOwnedChannels(op);
+  }
+
+  void GatherOperatorToRoot(Operator& op)
+  {
+    if (!OwnerOnlyStorageEnabled() || !op.TwoBody.IsAllocated())
+      return;
+    PrefetchTwoBodyMatrices(op);
+    if (!IsRoot())
+      ClearTwoBodyCache(op);
+  }
+
+  double TwoBodyNorm(const TwoBodyME& two_body)
+  {
+    if (!OwnerOnlyStorageEnabled())
+      return two_body.Norm();
+
+    double norm_squared = 0.0;
+    if (two_body.IsAllocated())
+    {
+      EnsureChannelOwnership(*two_body.modelspace);
+      for (const auto& itmat : two_body.MatEl)
+      {
+        const auto ch_bra = itmat.first[0];
+        if (TwoBodyChannelOwner(*two_body.modelspace, ch_bra) != Rank())
+          continue;
+
+        const arma::mat& matrix = itmat.second;
+        int Jbra = two_body.modelspace->GetTwoBodyChannel(ch_bra).J;
+        int Jket = two_body.modelspace->GetTwoBodyChannel(itmat.first[1]).J;
+        int degeneracy = (2 * Jket + 1) * (std::min(Jbra, Jket + two_body.rank_J) - std::max(-Jbra, Jket - two_body.rank_J) + 1);
+        double weighted_norm = arma::norm(matrix, "fro") * degeneracy;
+        norm_squared += (ch_bra == itmat.first[1]) ? weighted_norm * weighted_norm : 2 * weighted_norm * weighted_norm;
+      }
+    }
+
+    AllreduceInPlace(norm_squared);
+    return std::sqrt(norm_squared);
+  }
+
+  double OneBodyNorm(const Operator& op)
+  {
+    return op.OneBodyNorm();
+  }
+
+  double TwoBodyNorm(const Operator& op)
+  {
+    return TwoBodyNorm(op.TwoBody);
+  }
+
+  double ThreeBodyNorm(const Operator& op)
+  {
+    return op.ThreeBodyNorm();
+  }
+
+  double Norm(const Operator& op)
+  {
+    if (!Enabled())
+      return op.Norm();
+
+    if (op.IsNumberConserving())
+    {
+      double n1 = OneBodyNorm(op);
+      double n2 = TwoBodyNorm(op);
+      double n3 = ThreeBodyNorm(op);
+      return std::sqrt(n1 * n1 + n2 * n2 + n3 * n3);
+    }
+
+    return op.Norm();
   }
 }

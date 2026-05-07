@@ -317,14 +317,17 @@ namespace Commutator
   Operator CommutatorScalarScalar(const Operator &X, const Operator &Y)
   {
     double t_css = omp_get_wtime();
-    int z_Jrank = X.GetJRank() + Y.GetJRank(); // I sure hope this is zero.
-    int z_Trank = X.GetTRank() + Y.GetTRank();
-    int z_parity = (X.GetParity() + Y.GetParity()) % 2;
+    Operator X_work = X;
+    Operator Y_work = Y;
+
+    int z_Jrank = X_work.GetJRank() + Y_work.GetJRank(); // I sure hope this is zero.
+    int z_Trank = X_work.GetTRank() + Y_work.GetTRank();
+    int z_parity = (X_work.GetParity() + Y_work.GetParity()) % 2;
     int z_particlerank = use_imsrg3 ? 3 : 2;
     if (imsrg_mpi::Enabled())
     {
-      if (use_imsrg3 || X.GetParticleRank() > 2 || Y.GetParticleRank() > 2 ||
-          X.GetTRank() != 0 || Y.GetTRank() != 0 || X.GetParity() != 0 || Y.GetParity() != 0)
+      if (use_imsrg3 || X_work.GetParticleRank() > 2 || Y_work.GetParticleRank() > 2 ||
+          X_work.GetTRank() != 0 || Y_work.GetTRank() != 0 || X_work.GetParity() != 0 || Y_work.GetParity() != 0)
       {
         imsrg_mpi::Abort("MPI IMSRG(2) currently supports scalar IMSRG(2) commutators only: IMSRG3=false, rank_T=0, parity=0, particle_rank<=2.");
       }
@@ -332,18 +335,19 @@ namespace Commutator
     //    int z_particlerank = std::max(X.GetParticleRank(), Y.GetParticleRank());
     //    if (use_imsrg3)
     //      z_particlerank = std::max(z_particlerank, 3);
-    ModelSpace &ms = *(Y.GetModelSpace());
+    ModelSpace &ms = *(Y_work.GetModelSpace());
     Operator Z(ms, z_Jrank, z_Trank, z_parity, z_particlerank);
     if (imsrg_mpi::Enabled())
       imsrg_mpi::EnsureChannelOwnership(ms);
+    imsrg_mpi::RestrictOperatorToOwnedChannels(Z);
 
 
     if (Z.IsReduced())
        Z.MakeNotReduced();
 
-    if ((X.IsHermitian() and Y.IsHermitian()) or (X.IsAntiHermitian() and Y.IsAntiHermitian()))
+    if ((X_work.IsHermitian() and Y_work.IsHermitian()) or (X_work.IsAntiHermitian() and Y_work.IsAntiHermitian()))
       Z.SetAntiHermitian();
-    else if ((X.IsHermitian() and Y.IsAntiHermitian()) or (X.IsAntiHermitian() and Y.IsHermitian()))
+    else if ((X_work.IsHermitian() and Y_work.IsAntiHermitian()) or (X_work.IsAntiHermitian() and Y_work.IsHermitian()))
       Z.SetHermitian();
     else
       Z.SetNonHermitian();
@@ -361,43 +365,49 @@ namespace Commutator
 
     // Here is where we start calling the IMSRG(2) commutator expressions.
     if (comm_term_on["comm110ss"])
-      comm110ss(X, Y, Z);
+      comm110ss(X_work, Y_work, Z);
     if (comm_term_on["comm220ss"])
-      comm220ss(X, Y, Z);
+      comm220ss(X_work, Y_work, Z);
 
 
     if (comm_term_on["comm111ss"])
-      comm111ss(X, Y, Z);
+      comm111ss(X_work, Y_work, Z);
     if (comm_term_on["comm121ss"])
-      comm121ss(X, Y, Z);
+      comm121ss(X_work, Y_work, Z);
     if (comm_term_on["comm122ss"])
-      comm122ss(X, Y, Z);
+      comm122ss(X_work, Y_work, Z);
 
 
     // The 222_pp_hh and 221ss terms can share a common intermediate
     // so if we're computing both, we do them together
     if (comm_term_on["comm222_pp_hhss"] and comm_term_on["comm221ss"])
     {
-      comm222_pp_hh_221ss(X, Y, Z);
+      comm222_pp_hh_221ss(X_work, Y_work, Z);
     }
     else // otherwise, just do the one that is turned on.
     {
       if (comm_term_on["comm222_pp_hhss"])
-        comm222_pp_hhss(X, Y, Z);
+        comm222_pp_hhss(X_work, Y_work, Z);
       if (comm_term_on["comm221ss"])
-        comm221ss(X, Y, Z);
+        comm221ss(X_work, Y_work, Z);
     }
 
 
     //    if (comm_term_on["comm222_pp_hh_221ss"])
     //      comm222_pp_hh_221ss(X, Y, Z);
     if (comm_term_on["comm222_phss"])
-      comm222_phss(X, Y, Z);
+    {
+      imsrg_mpi::PrefetchTwoBodyMatrices(X_work);
+      imsrg_mpi::PrefetchTwoBodyMatrices(Y_work);
+      comm222_phss(X_work, Y_work, Z);
+      imsrg_mpi::ClearTwoBodyCache(X_work);
+      imsrg_mpi::ClearTwoBodyCache(Y_work);
+    }
 
 
 
 
-    if (use_imsrg3 and ((X.Norm() > threebody_threshold) and (Y.Norm() > threebody_threshold)))
+    if (use_imsrg3 and ((X_work.Norm() > threebody_threshold) and (Y_work.Norm() > threebody_threshold)))
     {
       if (Z.modelspace->scalar3b_transform_first_pass)
         SetSingleThread(true);
@@ -405,62 +415,62 @@ namespace Commutator
       // This one is so important we always include it
       // important for suppressing off-diagonal H3
       if (comm_term_on["comm133ss"])
-        comm133ss(X, Y, Z); // scales as n^7, but really more like n^6
+        comm133ss(X_work, Y_work, Z); // scales as n^7, but really more like n^6
 
       // This gets the perturbative energy from the induced 3 body
       if (comm_term_on["comm330ss"])
-        comm330ss(X, Y, Z); // scales as n^6
+        comm330ss(X_work, Y_work, Z); // scales as n^6
 
       // This one is essential. If it's not here, then there are no induced 3 body terms
       if (comm_term_on["comm223ss"])
-        comm223ss(X, Y, Z); // scales as n^7
+        comm223ss(X_work, Y_work, Z); // scales as n^7
 
       // one of the two most important IMSRG(3) terms
       if (comm_term_on["comm232ss"])
-        comm232ss(X, Y, Z); // this is the slowest n^7 term
+        comm232ss(X_work, Y_work, Z); // this is the slowest n^7 term
 
       // Maybe not so important, but I think relatively cheap
       if (comm_term_on["comm331ss"])
-        comm331ss(X, Y, Z); // scales as n^7
+        comm331ss(X_work, Y_work, Z); // scales as n^7
 
       // Demonstrated that this can have some effect
       if (comm_term_on["comm231ss"])
-        comm231ss(X, Y, Z); // scales as n^6
+        comm231ss(X_work, Y_work, Z); // scales as n^6
 
       // no demonstrated effect yet, but it's cheap
       if (comm_term_on["comm132ss"])
-        comm132ss(X, Y, Z); // scales as n^6
+        comm132ss(X_work, Y_work, Z); // scales as n^6
 
       // Not too bad, though naively n^8
       if (comm_term_on["comm233_pp_hhss"])
-        comm233_pp_hhss(X, Y, Z);
+        comm233_pp_hhss(X_work, Y_work, Z);
 
       // This one is super slow too. It involves 9js
       // mat mult makes everything better!
       if (comm_term_on["comm233_phss"])
-        comm233_phss(X, Y, Z);
+        comm233_phss(X_work, Y_work, Z);
 
       // not too bad, though naively n^8
       if (comm_term_on["comm332_ppph_hhhpss"])
-        comm332_ppph_hhhpss(X, Y, Z);
+        comm332_ppph_hhhpss(X_work, Y_work, Z);
 
       // naively n^8, but reasonably fast when implemented as a mat mult
       if (comm_term_on["comm332_pphhss"])
-        comm332_pphhss(X, Y, Z);
+        comm332_pphhss(X_work, Y_work, Z);
 
       // naively n^9 but pretty fast as a mat mult
       if (comm_term_on["comm333_ppp_hhhss"])
-        comm333_ppp_hhhss(X, Y, Z);
+        comm333_ppp_hhhss(X_work, Y_work, Z);
 
       // This one works, but it's incredibly slow.  naively n^9.
       // Much improvement by going to mat mult
       if (comm_term_on["comm333_pph_hhpss"])
-        comm333_pph_hhpss(X, Y, Z);
+        comm333_pph_hhpss(X_work, Y_work, Z);
 
-      X.profiler.counter["N_ScalarCommutators_3b"] += 1;
+      X_work.profiler.counter["N_ScalarCommutators_3b"] += 1;
 
       // after going through once, we've stored all the 6js (and maybe 9js), so we can run in OMP loops from now on
-      X.modelspace->scalar3b_transform_first_pass = false;
+      X_work.modelspace->scalar3b_transform_first_pass = false;
 
       if (discard_2b_from_3b or discard_1b_from_3b or discard_0b_from_3b)
       {
@@ -482,13 +492,22 @@ namespace Commutator
 
     } // if imsrg3 and above threshold
 
-    imsrg_mpi::AllreduceOperatorInPlace(Z);
+    if (imsrg_mpi::OwnerOnlyStorageEnabled())
+    {
+      imsrg_mpi::AllreduceInPlace(Z.ZeroBody);
+      imsrg_mpi::AllreduceInPlace(Z.OneBody);
+      imsrg_mpi::RestrictOperatorToOwnedChannels(Z);
+    }
+    else
+    {
+      imsrg_mpi::AllreduceOperatorInPlace(Z);
+    }
 
     Z.modelspace->scalar_transform_first_pass = false;
     SetSingleThread(save_single_thread);
 
-    X.profiler.timer[__func__] += omp_get_wtime() - t_css;
-    X.profiler.counter["N_ScalarCommutators"] += 1;
+    X_work.profiler.timer[__func__] += omp_get_wtime() - t_css;
+    X_work.profiler.counter["N_ScalarCommutators"] += 1;
     return Z;
   }
 
@@ -844,7 +863,8 @@ namespace Commutator
     #pragma omp parallel for
     for (index_t indexi = 0; indexi < norbits; ++indexi)
     {
-      if (imsrg_mpi::Enabled() && (static_cast<int>(indexi % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
+      if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnerOnlyStorageEnabled() &&
+          (static_cast<int>(indexi % imsrg_mpi::Size()) != imsrg_mpi::Rank()))
         continue;
       auto i = indexi;
       Orbit &oi = Z.modelspace->GetOrbit(i);
@@ -1712,6 +1732,8 @@ namespace Commutator
     for (size_t ichbra = 0; ichbra < nch_and_ibra; ichbra++)
     {
       int ch = ch_vec[ichbra];
+      if (imsrg_mpi::OwnerOnlyStorageEnabled() && !imsrg_mpi::OwnsTwoBodyChannel(*Z.modelspace, ch))
+        continue;
       int ibra = ibra_vec[ichbra];
 
       TwoBodyChannel &tbc = Z.modelspace->GetTwoBodyChannel(ch);
@@ -2002,6 +2024,15 @@ namespace Commutator
         // up a factor hZ * phase(i+j+k+l). The hZ cancels the hXhY we have for the "head" part of the matrix
         // so we end up adding in either case.
         Zbar_ch.tail_cols(nKets_cc) += Zbar_ch.tail_cols(nKets_cc).t() % PhaseMatZ;
+      }
+
+      if (imsrg_mpi::OwnerOnlyStorageEnabled())
+      {
+        for (size_t ch = 0; ch < nch; ++ch)
+        {
+          int owner = imsrg_mpi::CrossCoupledChannelOwner(*Z.modelspace, ch);
+          imsrg_mpi::BroadcastMatrixFromRank(Z_bar[ch], owner);
+        }
       }
 
       X.profiler.timer["Build Z_bar"] += omp_get_wtime() - t_start;

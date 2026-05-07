@@ -36,6 +36,7 @@ void Generator::Update(Operator& H_s, Operator& Eta_s)
    Eta_s.Erase();
    if (imsrg_mpi::Enabled())
       imsrg_mpi::EnsureChannelOwnership(*H_s.GetModelSpace());
+   imsrg_mpi::RestrictOperatorToOwnedChannels(Eta_s);
    AddToEta(H_s,Eta_s);
    if (imsrg_mpi::Enabled() && use_isospin_averaging)
       imsrg_mpi::Abort("MPI IMSRG(2) does not yet support generator isospin averaging.");
@@ -44,7 +45,16 @@ void Generator::Update(Operator& H_s, Operator& Eta_s)
       // Eta_s = Eta_s.DoIsospinAveraging();
       Eta_s = Eta_s.UndoNormalOrdering().DoIsospinAveraging().DoNormalOrdering();
    }
-   imsrg_mpi::AllreduceOperatorInPlace(Eta_s);
+   if (imsrg_mpi::OwnerOnlyStorageEnabled())
+   {
+      imsrg_mpi::AllreduceInPlace(Eta_s.ZeroBody);
+      imsrg_mpi::AllreduceInPlace(Eta_s.OneBody);
+      imsrg_mpi::RestrictOperatorToOwnedChannels(Eta_s);
+   }
+   else
+   {
+      imsrg_mpi::AllreduceOperatorInPlace(Eta_s);
+   }
 }
 
 
@@ -800,4 +810,3 @@ Operator Generator::GetHod_ShellModel(Operator& H)
     return Hod;
 }
  
-

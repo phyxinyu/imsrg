@@ -110,7 +110,7 @@ void IMSRGSolver::GatherOmega()
   // the last omega in the list is the hunter. the one just preceeding it is the gatherer.
   auto &hunter = Omega.back();
   auto &gatherer = Omega[Omega.size() - 2];
-  if (hunter.Norm() > 1e-12) // SRS: changed this from 1e-6 to 1e-12. No reason for it to be so big.
+  if (imsrg_mpi::Norm(hunter) > 1e-12) // SRS: changed this from 1e-6 to 1e-12. No reason for it to be so big.
   {
     gatherer = BCH::BCH_Product(hunter, gatherer);
   }
@@ -270,7 +270,7 @@ void IMSRGSolver::Solve_magnus_euler()
   for (istep = 1; s < smax; ++istep)
   {
 
-    double norm_eta = Eta.Norm();
+    double norm_eta = imsrg_mpi::Norm(Eta);
     if (norm_eta < eta_criterion)
     {
       break;
@@ -283,7 +283,7 @@ void IMSRGSolver::Solve_magnus_euler()
       FlowingOps[0] *= 1.0 / 0.0;
       break;
     }
-    double norm_omega = Omega.back().Norm();
+    double norm_omega = imsrg_mpi::Norm(Omega.back());
     if (norm_omega > omega_norm_max)
     {
       if (hunter_gatherer)
@@ -1220,35 +1220,48 @@ double IMSRGSolver::CalculatePerturbativeTriples(Operator &Op_0)
 
 void IMSRGSolver::WriteFlowStatus(std::string fname)
 {
-  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+  if (fname == "")
     return;
-  if (fname != "")
+  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
   {
-    std::ofstream ff(fname, std::ios::app);
-    WriteFlowStatus(ff);
+    WriteFlowStatus(std::cout);
+    return;
   }
+  std::ofstream ff(fname, std::ios::app);
+  WriteFlowStatus(ff);
 }
 void IMSRGSolver::WriteFlowStatus(std::ostream &f)
 {
+  auto &H_s = FlowingOps[0];
+  double h_norm = imsrg_mpi::Norm(H_s);
+  double omega_one_body_norm = imsrg_mpi::OneBodyNorm(Omega.back());
+  double omega_two_body_norm = imsrg_mpi::TwoBodyNorm(Omega.back());
+  double omega_three_body_norm = imsrg_mpi::ThreeBodyNorm(Omega.back());
+  double eta_one_body_norm = imsrg_mpi::OneBodyNorm(Eta);
+  double eta_two_body_norm = imsrg_mpi::TwoBodyNorm(Eta);
+  double eta_three_body_norm = imsrg_mpi::ThreeBodyNorm(Eta);
+  imsrg_mpi::PrefetchTwoBodyMatrices(H_s);
   if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+  {
+    imsrg_mpi::ClearTwoBodyCache(H_s);
     return;
+  }
   if (f.good())
   {
     int fwidth = 16;
     int fprecision = 9;
-    auto &H_s = FlowingOps[0];
     f.setf(std::ios::fixed);
     f << std::fixed << std::setw(5) << istep
       << std::setw(12) << std::setprecision(5) << s
       << std::setw(fwidth) << std::setprecision(fprecision) << H_s.ZeroBody
-      << std::setw(fwidth) << std::setprecision(fprecision) << H_s.Norm()
+      << std::setw(fwidth) << std::setprecision(fprecision) << h_norm
       << std::setw(fwidth) << std::setprecision(fprecision) << cumulative_error
-      << std::setw(fwidth) << std::setprecision(fprecision) << Omega.back().OneBodyNorm()
-      << std::setw(fwidth) << std::setprecision(fprecision) << Omega.back().TwoBodyNorm()
-      << std::setw(fwidth) << std::setprecision(fprecision) << Omega.back().ThreeBodyNorm()
-      << std::setw(fwidth) << std::setprecision(fprecision) << Eta.OneBodyNorm()
-      << std::setw(fwidth) << std::setprecision(fprecision) << Eta.TwoBodyNorm()
-      << std::setw(fwidth) << std::setprecision(fprecision) << Eta.ThreeBodyNorm()
+      << std::setw(fwidth) << std::setprecision(fprecision) << omega_one_body_norm
+      << std::setw(fwidth) << std::setprecision(fprecision) << omega_two_body_norm
+      << std::setw(fwidth) << std::setprecision(fprecision) << omega_three_body_norm
+      << std::setw(fwidth) << std::setprecision(fprecision) << eta_one_body_norm
+      << std::setw(fwidth) << std::setprecision(fprecision) << eta_two_body_norm
+      << std::setw(fwidth) << std::setprecision(fprecision) << eta_three_body_norm
       << std::setw(7) << std::setprecision(0) << profiler.counter["N_ScalarCommutators"] + profiler.counter["N_TensorCommutators"]
       << std::setw(fwidth) << std::setprecision(fprecision) << H_s.GetMP2_Energy()
       << std::setw(7) << std::setprecision(0) << profiler.counter["N_Operators"]
@@ -1257,6 +1270,7 @@ void IMSRGSolver::WriteFlowStatus(std::ostream &f)
       << std::setw(12) << std::setprecision(3) << profiler.CheckMem()["RSS"] / 1024. << " / " << std::skipws << profiler.MaxMemUsage() / 1024. << std::fixed
       << std::endl;
   }
+  imsrg_mpi::ClearTwoBodyCache(H_s);
 }
 
 void IMSRGSolver::WriteFlowStatusHeader(std::string fname)

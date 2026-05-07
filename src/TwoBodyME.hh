@@ -83,11 +83,13 @@ class TwoBodyME
   void SetNonHermitian();
   bool IsAllocated()const;
 
-  arma::mat& GetMatrix(size_t chbra, size_t chket){return MatEl.at({chbra,chket});};
-  arma::mat& GetMatrix(size_t ch){return GetMatrix(ch,ch);};
-  arma::mat& GetMatrix(std::array<size_t,2> a){return GetMatrix(a[0],a[1]);};
-  const arma::mat& GetMatrix(size_t chbra, size_t chket)const {return  MatEl.at({chbra,chket});};
-  const arma::mat& GetMatrix(size_t ch)const {return  GetMatrix(ch,ch);};
+  bool HasMatrix(size_t chbra, size_t chket) const;
+  bool HasMatrix(std::array<size_t,2> a) const;
+  arma::mat& GetMatrix(size_t chbra, size_t chket);
+  arma::mat& GetMatrix(size_t ch);
+  arma::mat& GetMatrix(std::array<size_t,2> a);
+  const arma::mat& GetMatrix(size_t chbra, size_t chket) const;
+  const arma::mat& GetMatrix(size_t ch) const;
 
  //TwoBody setter/getters
   double GetTBME(int ch_bra, int ch_ket, int a, int b, int c, int d) const;

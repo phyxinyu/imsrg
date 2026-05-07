@@ -6,8 +6,10 @@
 #define MpiSupport_hh 1
 
 #include <armadillo>
+#include <array>
 #include <cstddef>
 #include <string>
+#include <vector>
 
 class ModelSpace;
 class Operator;
@@ -23,6 +25,9 @@ namespace imsrg_mpi
   bool Enabled();
   bool Initialized();
 
+  void SetOwnerOnlyStorage(bool enabled);
+  bool OwnerOnlyStorageEnabled();
+
   int Rank();
   int Size();
   bool IsRoot();
@@ -35,11 +40,24 @@ namespace imsrg_mpi
   bool OwnsCrossCoupledChannel(ModelSpace& modelspace, std::size_t ch);
   int TwoBodyChannelOwner(ModelSpace& modelspace, std::size_t ch);
   int CrossCoupledChannelOwner(ModelSpace& modelspace, std::size_t ch);
+  bool OwnsTwoBodyMatrix(ModelSpace& modelspace, const std::array<std::size_t, 2>& key);
 
   void AllreduceInPlace(double& value);
   void AllreduceInPlace(arma::mat& matrix);
+  void BroadcastMatrixFromRank(arma::mat& matrix, int root);
   void AllreduceTwoBodyInPlace(TwoBodyME& two_body);
   void AllreduceOperatorInPlace(Operator& op);
+
+  void RestrictOperatorToOwnedChannels(Operator& op);
+  void PrefetchTwoBodyMatrices(Operator& op);
+  void ClearTwoBodyCache(Operator& op);
+  void GatherOperatorToRoot(Operator& op);
+
+  double TwoBodyNorm(const TwoBodyME& two_body);
+  double OneBodyNorm(const Operator& op);
+  double TwoBodyNorm(const Operator& op);
+  double ThreeBodyNorm(const Operator& op);
+  double Norm(const Operator& op);
 }
 
 #endif

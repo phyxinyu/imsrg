@@ -1050,6 +1050,11 @@ int main(int argc, char** argv)
     return 0;
   }
 
+  if (imsrg_mpi::Enabled())
+  {
+    imsrg_mpi::SetOwnerOnlyStorage(true);
+    imsrg_mpi::RestrictOperatorToOwnedChannels(HNO);
+  }
 
 //// Now we're ready do to the IMSRG calculation.
 
@@ -1319,6 +1324,7 @@ int main(int argc, char** argv)
 
 
   // Write the output
+  imsrg_mpi::GatherOperatorToRoot(imsrgsolver.GetH_s());
   if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
     return 0;
 
@@ -1744,4 +1750,3 @@ int main(int argc, char** argv)
 
   return 0;
 }
-
