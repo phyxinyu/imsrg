@@ -1,5 +1,8 @@
 .vscode/
 build/
+build-mpi/
+output/
+work/scripts/output/
 #CMake output files
 CMakeFiles/
 CMakeCache.txt

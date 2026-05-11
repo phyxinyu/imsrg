@@ -47,8 +47,8 @@ ELEM = ['n', 'H', 'He', 'Li', 'Be', 'B', 'C', 'N',
 ARGS = {}
 
 # Maximum value of s, and maximum step size ds
-ARGS['smax'] = '0'
-ARGS['dsmax'] = '0.5'
+ARGS['smax'] = '0.02'
+ARGS['dsmax'] = '0.01'
 ARGS['basis'] = "oscillator"
 # ARGS['lmax3'] = '10' # for comparing with Heiko
 
@@ -159,7 +159,7 @@ for Z in range(4, 5):
 #     ARGS['method'] = method
 
      # ARGS['Operators'] = 'GamowTeller'    # Operators to consistenly transform, separated by commas.
-     ARGS['Operators'] = 'M0nu_F_3.54_none,M0nu_GT_3.54_none,M0nu_T_3.54_none'
+     ARGS['Operators'] = ''
 #     ARGS['Operators'] = 'Rp2,Rn2'
 #     ARGS['Operators'] = 'E2'
 #     ARGS['Operators'] = 'E2,M1'

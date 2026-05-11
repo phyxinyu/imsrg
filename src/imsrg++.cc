@@ -1277,6 +1277,15 @@ int main(int argc, char** argv)
       }
     }
   }
+
+  // Final shell-model output may re-normal-order the Hamiltonian and recompute
+  // zero/one-body terms from two-body matrix elements. In owner-only MPI mode,
+  // gather before that step so root does the final normal ordering from the
+  // complete two-body operator instead of a rank-local channel subset.
+  imsrg_mpi::GatherOperatorToRoot(imsrgsolver.GetH_s());
+  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
+    return 0;
+
   if ( renormal_order )
   {
 
@@ -1324,10 +1333,6 @@ int main(int argc, char** argv)
 
 
   // Write the output
-  imsrg_mpi::GatherOperatorToRoot(imsrgsolver.GetH_s());
-  if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
-    return 0;
-
   // If we're doing a shell model interaction, write the
   // interaction files to disk.
 //  if (modelspace.valence.size() > 0)
