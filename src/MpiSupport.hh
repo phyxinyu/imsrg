@@ -45,11 +45,13 @@ namespace imsrg_mpi
   void AllreduceInPlace(double& value);
   void AllreduceInPlace(arma::mat& matrix);
   void BroadcastMatrixFromRank(arma::mat& matrix, int root);
+  std::vector<double> AlltoallvDoubles(const std::vector<std::vector<double>>& send_buffers);
   void AllreduceTwoBodyInPlace(TwoBodyME& two_body);
   void AllreduceOperatorInPlace(Operator& op);
 
   void RestrictOperatorToOwnedChannels(Operator& op);
   void PrefetchTwoBodyMatrices(Operator& op);
+  void PrefetchTwoBodyMatrices(Operator& op, const std::vector<std::array<std::size_t, 2>>& requested_keys);
   void ClearTwoBodyCache(Operator& op);
   void GatherOperatorToRoot(Operator& op);
 
@@ -58,6 +60,7 @@ namespace imsrg_mpi
   double TwoBodyNorm(const Operator& op);
   double ThreeBodyNorm(const Operator& op);
   double Norm(const Operator& op);
+  double MP2Energy(const Operator& op);
 }
 
 #endif

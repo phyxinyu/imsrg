@@ -109,6 +109,26 @@ namespace
     }
     return keys;
   }
+
+  std::array<std::size_t, 2> CanonicalKey(std::array<std::size_t, 2> key)
+  {
+    if (key[0] > key[1])
+      std::swap(key[0], key[1]);
+    return key;
+  }
+
+  template <typename ChunkFn>
+  void ForEachMatrixChunk(arma::mat& matrix, ChunkFn&& chunk_fn)
+  {
+    arma::uword offset = 0;
+    const arma::uword max_count = static_cast<arma::uword>(std::numeric_limits<int>::max());
+    while (offset < matrix.n_elem)
+    {
+      arma::uword count = std::min(max_count, matrix.n_elem - offset);
+      chunk_fn(matrix.memptr() + offset, static_cast<int>(count));
+      offset += count;
+    }
+  }
 }
 
 namespace imsrg_mpi
@@ -129,7 +149,9 @@ namespace imsrg_mpi
     MPI_Initialized(&initialized);
     if (!initialized)
     {
-      MPI_Init(&argc, &argv);
+      int ierr = MPI_Init(&argc, &argv);
+      if (ierr != MPI_SUCCESS)
+        throw std::runtime_error("MPI_Init failed with error code " + std::to_string(ierr));
       mpi_initialized_by_us = true;
     }
     RefreshRankSize();
@@ -293,14 +315,9 @@ namespace imsrg_mpi
 #ifdef IMSRG_USE_MPI
     if (Enabled() && matrix.n_elem > 0)
     {
-      arma::uword offset = 0;
-      const arma::uword max_count = static_cast<arma::uword>(std::numeric_limits<int>::max());
-      while (offset < matrix.n_elem)
-      {
-        arma::uword count = std::min(max_count, matrix.n_elem - offset);
-        MPI_Allreduce(MPI_IN_PLACE, matrix.memptr() + offset, static_cast<int>(count), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        offset += count;
-      }
+      ForEachMatrixChunk(matrix, [](double* data, int count) {
+        MPI_Allreduce(MPI_IN_PLACE, data, count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+      });
     }
 #else
     (void)matrix;
@@ -312,19 +329,57 @@ namespace imsrg_mpi
 #ifdef IMSRG_USE_MPI
     if (Enabled() && matrix.n_elem > 0)
     {
-      arma::uword offset = 0;
-      const arma::uword max_count = static_cast<arma::uword>(std::numeric_limits<int>::max());
-      while (offset < matrix.n_elem)
-      {
-        arma::uword count = std::min(max_count, matrix.n_elem - offset);
-        MPI_Bcast(matrix.memptr() + offset, static_cast<int>(count), MPI_DOUBLE, root, MPI_COMM_WORLD);
-        offset += count;
-      }
+      ForEachMatrixChunk(matrix, [root](double* data, int count) {
+        MPI_Bcast(data, count, MPI_DOUBLE, root, MPI_COMM_WORLD);
+      });
     }
 #else
     (void)matrix;
     (void)root;
 #endif
+  }
+
+  std::vector<double> AlltoallvDoubles(const std::vector<std::vector<double>>& send_buffers)
+  {
+    std::vector<double> received;
+#ifdef IMSRG_USE_MPI
+    if (!Enabled())
+      return send_buffers.empty() ? received : send_buffers.front();
+
+    int nranks = Size();
+    std::vector<int> send_counts(nranks, 0);
+    std::vector<int> recv_counts(nranks, 0);
+    for (int rank = 0; rank < nranks; ++rank)
+    {
+      if (rank < static_cast<int>(send_buffers.size()))
+        send_counts[rank] = static_cast<int>(send_buffers[rank].size());
+    }
+
+    MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    std::vector<int> send_displs(nranks, 0);
+    std::vector<int> recv_displs(nranks, 0);
+    for (int rank = 1; rank < nranks; ++rank)
+    {
+      send_displs[rank] = send_displs[rank - 1] + send_counts[rank - 1];
+      recv_displs[rank] = recv_displs[rank - 1] + recv_counts[rank - 1];
+    }
+
+    std::vector<double> send_flat(send_displs.back() + send_counts.back());
+    for (int rank = 0; rank < nranks; ++rank)
+    {
+      if (rank < static_cast<int>(send_buffers.size()) && !send_buffers[rank].empty())
+        std::copy(send_buffers[rank].begin(), send_buffers[rank].end(), send_flat.begin() + send_displs[rank]);
+    }
+
+    received.resize(recv_displs.back() + recv_counts.back());
+    MPI_Alltoallv(send_flat.data(), send_counts.data(), send_displs.data(), MPI_DOUBLE,
+                  received.data(), recv_counts.data(), recv_displs.data(), MPI_DOUBLE,
+                  MPI_COMM_WORLD);
+#else
+    received = send_buffers.empty() ? std::vector<double>() : send_buffers.front();
+#endif
+    return received;
   }
 
   void AllreduceTwoBodyInPlace(TwoBodyME& two_body)
@@ -361,13 +416,42 @@ namespace imsrg_mpi
 
   void PrefetchTwoBodyMatrices(Operator& op)
   {
+    PrefetchTwoBodyMatrices(op, MatrixKeys(op.TwoBody));
+  }
+
+  void PrefetchTwoBodyMatrices(Operator& op, const std::vector<std::array<std::size_t, 2>>& requested_keys)
+  {
     if (!OwnerOnlyStorageEnabled() || !op.TwoBody.IsAllocated())
       return;
 
     ModelSpace& modelspace = *op.GetModelSpace();
     EnsureChannelOwnership(modelspace);
-    for (const auto& key : MatrixKeys(op.TwoBody))
+
+    std::vector<std::array<std::size_t, 2>> local_keys;
+    local_keys.reserve(requested_keys.size());
+    for (const auto& key : requested_keys)
+      local_keys.push_back(CanonicalKey(key));
+    std::sort(local_keys.begin(), local_keys.end());
+    local_keys.erase(std::unique(local_keys.begin(), local_keys.end()), local_keys.end());
+
+    std::vector<std::array<std::size_t, 2>> legal_keys = MatrixKeys(op.TwoBody);
+    std::vector<int> needed(legal_keys.size(), 0);
+    for (std::size_t i = 0; i < legal_keys.size(); ++i)
     {
+      if (std::binary_search(local_keys.begin(), local_keys.end(), legal_keys[i]))
+        needed[i] = 1;
+    }
+
+#ifdef IMSRG_USE_MPI
+    if (Enabled() && !needed.empty())
+      MPI_Allreduce(MPI_IN_PLACE, needed.data(), static_cast<int>(needed.size()), MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+
+    for (std::size_t ikey = 0; ikey < legal_keys.size(); ++ikey)
+    {
+      if (!needed[ikey])
+        continue;
+      const auto& key = legal_keys[ikey];
       std::size_t ch_bra = key[0];
       std::size_t ch_ket = key[1];
       TwoBodyChannel& tbc_bra = modelspace.GetTwoBodyChannel(ch_bra);
@@ -386,6 +470,7 @@ namespace imsrg_mpi
 
   void ClearTwoBodyCache(Operator& op)
   {
+    // Remove temporary prefetched non-owner matrices; owned resident storage remains.
     RestrictOperatorToOwnedChannels(op);
   }
 
@@ -455,5 +540,82 @@ namespace imsrg_mpi
     }
 
     return op.Norm();
+  }
+
+  double MP2Energy(const Operator& op)
+  {
+    if (!OwnerOnlyStorageEnabled())
+      return const_cast<Operator&>(op).GetMP2_Energy();
+
+    ModelSpace& modelspace = *op.GetModelSpace();
+    EnsureChannelOwnership(modelspace);
+
+    double emp2 = 0.0;
+    std::vector<index_t> particles_vec(modelspace.particles.begin(), modelspace.particles.end());
+    int nparticles = static_cast<int>(particles_vec.size());
+    for (int ii = 0; ii < nparticles; ++ii)
+    {
+      index_t i = particles_vec[ii];
+      double ei = op.OneBody(i, i);
+      Orbit& oi = modelspace.GetOrbit(i);
+      for (auto& a : modelspace.holes)
+      {
+        Orbit& oa = modelspace.GetOrbit(a);
+        double ea = op.OneBody(a, a);
+        if (static_cast<int>(i % Size()) == Rank() && std::abs(op.OneBody(i, a)) > 1e-9)
+          emp2 += (oa.j2 + 1) * oa.occ * op.OneBody(i, a) * op.OneBody(i, a) / (op.OneBody(a, a) - op.OneBody(i, i));
+
+        for (index_t j : modelspace.particles)
+        {
+          if (j < i)
+            continue;
+          double ej = op.OneBody(j, j);
+          Orbit& oj = modelspace.GetOrbit(j);
+          for (auto& b : modelspace.holes)
+          {
+            if (b < a)
+              continue;
+            Orbit& ob = modelspace.GetOrbit(b);
+            if ((oi.l + oj.l + oa.l + ob.l) % 2 > 0)
+              continue;
+            if ((oi.tz2 + oj.tz2) != (oa.tz2 + ob.tz2))
+              continue;
+
+            double eb = op.OneBody(b, b);
+            double denom = ea + eb - ei - ej;
+            int Jmin = std::max(std::abs(oi.j2 - oj.j2), std::abs(oa.j2 - ob.j2)) / 2;
+            int Jmax = std::min(oi.j2 + oj.j2, oa.j2 + ob.j2) / 2;
+            int dJ = 1;
+            if (a == b || i == j)
+            {
+              Jmin += Jmin % 2;
+              dJ = 2;
+            }
+
+            for (int J = Jmin; J <= Jmax; J += dJ)
+            {
+              int parity_bra = (oa.l + ob.l) % 2;
+              int parity_ket = (oi.l + oj.l) % 2;
+              int tz_bra = (oa.tz2 + ob.tz2) / 2;
+              int tz_ket = (oi.tz2 + oj.tz2) / 2;
+              int ch_bra = modelspace.GetTwoBodyChannelIndex(J, parity_bra, tz_bra);
+              int ch_ket = modelspace.GetTwoBodyChannelIndex(J, parity_ket, tz_ket);
+              std::array<std::size_t, 2> key{
+                static_cast<std::size_t>(std::min(ch_bra, ch_ket)),
+                static_cast<std::size_t>(std::max(ch_bra, ch_ket))};
+              if (!OwnsTwoBodyMatrix(modelspace, key))
+                continue;
+
+              double tbme = op.TwoBody.GetTBME_J_norm(J, a, b, i, j);
+              if (std::abs(tbme) > 1e-9)
+                emp2 += (2 * J + 1) * oa.occ * ob.occ * tbme * tbme / denom;
+            }
+          }
+        }
+      }
+    }
+
+    AllreduceInPlace(emp2);
+    return emp2;
   }
 }

@@ -6,10 +6,52 @@
 #include "PhysicalConstants.hh" // for HBARC and M_NUCLEON
 
 #include "omp.h"
+#include <array>
+#include <cmath>
+#include <cstddef>
 #include <string>
+#include <vector>
 
 using PhysConst::M_NUCLEON;
 using PhysConst::HBARC;
+
+namespace
+{
+   void AddMatrixKey(std::vector<std::array<std::size_t, 2>>& keys, std::size_t ch_bra, std::size_t ch_ket)
+   {
+      if (ch_bra > ch_ket)
+         std::swap(ch_bra, ch_ket);
+      keys.push_back({ch_bra, ch_ket});
+   }
+
+   void AddMonopoleKeys(const TwoBodyME& two_body, std::vector<std::array<std::size_t, 2>>& keys,
+                        int a, int b, int c, int d)
+   {
+      ModelSpace& modelspace = *two_body.modelspace;
+      Orbit& oa = modelspace.GetOrbit(a);
+      Orbit& ob = modelspace.GetOrbit(b);
+      Orbit& oc = modelspace.GetOrbit(c);
+      Orbit& od = modelspace.GetOrbit(d);
+      int Tzab = (oa.tz2 + ob.tz2) / 2;
+      int parityab = (oa.l + ob.l) % 2;
+      int Tzcd = (oc.tz2 + od.tz2) / 2;
+      int paritycd = (oc.l + od.l) % 2;
+
+      if ((parityab + paritycd + two_body.parity) % 2 != 0)
+         return;
+      if (std::abs(Tzab - Tzcd) > two_body.rank_T)
+         return;
+
+      int jmin = std::abs(oa.j2 - ob.j2) / 2;
+      int jmax = (oa.j2 + ob.j2) / 2;
+      for (int J = jmin; J <= jmax; ++J)
+      {
+         std::size_t chab = modelspace.GetTwoBodyChannelIndex(J, parityab, Tzab);
+         std::size_t chcd = modelspace.GetTwoBodyChannelIndex(J, paritycd, Tzcd);
+         AddMatrixKey(keys, chab, chcd);
+      }
+   }
+}
 
 std::function<double(double,double)> Generator::wegner_func = [] (double Hod, double denom){ return Hod * denom;};
 std::function<double(double,double)> Generator::white_func = [] (double Hod, double denom){ return Hod / denom;};
@@ -37,7 +79,9 @@ void Generator::Update(Operator& H_s, Operator& Eta_s)
    if (imsrg_mpi::Enabled())
       imsrg_mpi::EnsureChannelOwnership(*H_s.GetModelSpace());
    imsrg_mpi::RestrictOperatorToOwnedChannels(Eta_s);
+   imsrg_mpi::PrefetchTwoBodyMatrices(H_s, GetDenominatorMatrixKeys(H_s, Eta_s));
    AddToEta(H_s,Eta_s);
+   imsrg_mpi::ClearTwoBodyCache(H_s);
    if (imsrg_mpi::Enabled() && use_isospin_averaging)
       imsrg_mpi::Abort("MPI IMSRG(2) does not yet support generator isospin averaging.");
    if (use_isospin_averaging)
@@ -55,6 +99,199 @@ void Generator::Update(Operator& H_s, Operator& Eta_s)
    {
       imsrg_mpi::AllreduceOperatorInPlace(Eta_s);
    }
+}
+
+std::vector<std::array<std::size_t, 2>> Generator::GetDenominatorMatrixKeys(Operator& H_s, Operator& Eta_s)
+{
+   std::vector<std::array<std::size_t, 2>> keys;
+   if (!imsrg_mpi::OwnerOnlyStorageEnabled() || denominator_partitioning != Epstein_Nesbet || !H_s.TwoBody.IsAllocated())
+      return keys;
+
+   auto rank_owns_orbit_work = [](std::size_t orbit) {
+      return !imsrg_mpi::Enabled() || (static_cast<int>(orbit % imsrg_mpi::Size()) == imsrg_mpi::Rank());
+   };
+
+   auto add_1b_denominator_keys = [&](int i, int j) {
+      AddMonopoleKeys(H_s.TwoBody, keys, i, j, i, j);
+   };
+
+   auto add_2b_denominator_keys = [&](int ch_bra, int ch_ket, int ibra, int iket) {
+      TwoBodyChannel& tbc_bra = H_s.modelspace->GetTwoBodyChannel(ch_bra);
+      TwoBodyChannel& tbc_ket = H_s.modelspace->GetTwoBodyChannel(ch_ket);
+      Ket& bra = tbc_bra.GetKet(ibra);
+      Ket& ket = tbc_ket.GetKet(iket);
+      int i = bra.p;
+      int j = bra.q;
+      int k = ket.p;
+      int l = ket.q;
+      AddMonopoleKeys(H_s.TwoBody, keys, i, j, i, j);
+      AddMonopoleKeys(H_s.TwoBody, keys, k, l, k, l);
+      AddMonopoleKeys(H_s.TwoBody, keys, i, k, i, k);
+      AddMonopoleKeys(H_s.TwoBody, keys, i, l, i, l);
+      AddMonopoleKeys(H_s.TwoBody, keys, j, k, j, k);
+      AddMonopoleKeys(H_s.TwoBody, keys, j, l, j, l);
+   };
+
+   auto collect_single_ref = [&]() {
+      for (auto& a : H_s.modelspace->core)
+      {
+         for (auto& i : VectorUnion(H_s.modelspace->valence, H_s.modelspace->qspace))
+         {
+            if (!rank_owns_orbit_work(i))
+               continue;
+            add_1b_denominator_keys(i, a);
+         }
+      }
+      if (only_1b_eta)
+         return;
+      for (auto& iter : Eta_s.TwoBody.MatEl)
+      {
+         int ch_bra = static_cast<int>(iter.first[0]);
+         int ch_ket = static_cast<int>(iter.first[1]);
+         if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*H_s.modelspace, ch_bra))
+            continue;
+         TwoBodyChannel& tbc_bra = H_s.modelspace->GetTwoBodyChannel(ch_bra);
+         TwoBodyChannel& tbc_ket = H_s.modelspace->GetTwoBodyChannel(ch_ket);
+         for (auto& iket : tbc_ket.GetKetIndex_cc())
+         {
+            for (auto& ibra : VectorUnion(tbc_bra.GetKetIndex_qq(), tbc_bra.GetKetIndex_vv(), tbc_bra.GetKetIndex_qv()))
+               add_2b_denominator_keys(ch_bra, ch_ket, ibra, iket);
+         }
+      }
+   };
+
+   auto collect_shell_model = [&]() {
+      for (auto& a : VectorUnion(H_s.modelspace->core, H_s.modelspace->valence))
+      {
+         for (auto& i : VectorUnion(H_s.modelspace->valence, H_s.modelspace->qspace))
+         {
+            if (!rank_owns_orbit_work(i))
+               continue;
+            if (i == a)
+               continue;
+            add_1b_denominator_keys(i, a);
+         }
+      }
+      if (only_1b_eta)
+         return;
+      int nchan = H_s.modelspace->GetNumberTwoBodyChannels();
+      for (int ch = 0; ch < nchan; ++ch)
+      {
+         if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*H_s.modelspace, ch))
+            continue;
+         TwoBodyChannel& tbc = H_s.modelspace->GetTwoBodyChannel(ch);
+         for (auto& iket : VectorUnion(tbc.GetKetIndex_cc(), tbc.GetKetIndex_vc()))
+         {
+            for (auto& ibra : VectorUnion(tbc.GetKetIndex_vv(), tbc.GetKetIndex_qv(), tbc.GetKetIndex_qq()))
+               add_2b_denominator_keys(ch, ch, ibra, iket);
+         }
+         for (auto& iket : tbc.GetKetIndex_vv())
+         {
+            for (auto& ibra : VectorUnion(tbc.GetKetIndex_qv(), tbc.GetKetIndex_qq()))
+               add_2b_denominator_keys(ch, ch, ibra, iket);
+         }
+      }
+   };
+
+   auto collect_shell_model_npnh = [&]() {
+      collect_shell_model();
+      for (auto& c : H_s.modelspace->core)
+      {
+         if (!rank_owns_orbit_work(c))
+            continue;
+         for (auto& cprime : H_s.modelspace->core)
+         {
+            if (cprime <= c)
+               continue;
+            add_1b_denominator_keys(c, cprime);
+         }
+      }
+      int nchan = H_s.modelspace->GetNumberTwoBodyChannels();
+      for (int ch = 0; ch < nchan; ++ch)
+      {
+         if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*H_s.modelspace, ch))
+            continue;
+         TwoBodyChannel& tbc = H_s.modelspace->GetTwoBodyChannel(ch);
+         for (auto& iket : tbc.GetKetIndex_vc())
+         {
+            Ket& ket = tbc.GetKet(iket);
+            for (auto& ibra : tbc.GetKetIndex_qc())
+            {
+               Ket& bra = tbc.GetKet(ibra);
+               if ((ket.p == bra.p) or (ket.p == bra.q) or (ket.q == bra.p) or (ket.q == bra.q))
+                  continue;
+               add_2b_denominator_keys(ch, ch, ibra, iket);
+            }
+         }
+         for (auto& iket : tbc.GetKetIndex_cc())
+         {
+            Ket& ket = tbc.GetKet(iket);
+            for (auto& ibra : VectorUnion(tbc.GetKetIndex_vc(), tbc.GetKetIndex_qc()))
+            {
+               Ket& bra = tbc.GetKet(ibra);
+               if ((ket.p == bra.p) or (ket.p == bra.q) or (ket.q == bra.p) or (ket.q == bra.q))
+                  continue;
+               add_2b_denominator_keys(ch, ch, ibra, iket);
+            }
+         }
+      }
+   };
+
+   auto collect_hartree_fock = [&]() {
+      for (auto i : H_s.modelspace->all_orbits)
+      {
+         if (!rank_owns_orbit_work(i))
+            continue;
+         for (auto j : H_s.modelspace->all_orbits)
+         {
+            if (j > i)
+               continue;
+            add_1b_denominator_keys(i, j);
+         }
+      }
+   };
+
+   auto collect_1pa = [&]() {
+      for (auto& a : VectorUnion(H_s.modelspace->core, H_s.modelspace->valence))
+      {
+         for (auto& i : VectorUnion(H_s.modelspace->valence, H_s.modelspace->qspace))
+         {
+            if (!rank_owns_orbit_work(i))
+               continue;
+            if (i == a)
+               continue;
+            add_1b_denominator_keys(i, a);
+         }
+      }
+      int nchan = H_s.modelspace->GetNumberTwoBodyChannels();
+      for (int ch = 0; ch < nchan; ++ch)
+      {
+         if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*H_s.modelspace, ch))
+            continue;
+         TwoBodyChannel& tbc = H_s.modelspace->GetTwoBodyChannel(ch);
+         for (auto& iket : VectorUnion(tbc.GetKetIndex_cc(), tbc.GetKetIndex_vc()))
+         {
+            for (auto& ibra : VectorUnion(tbc.GetKetIndex_vv(), tbc.GetKetIndex_qv(), tbc.GetKetIndex_qq()))
+               add_2b_denominator_keys(ch, ch, ibra, iket);
+         }
+      }
+   };
+
+   if (generator_type == "wegner" or generator_type == "white" or generator_type == "atan" or
+       generator_type == "imaginary-time" or generator_type == "qtransfer-atan" or
+       generator_type.find("qtransfer-atan") != std::string::npos)
+      collect_single_ref();
+   else if (generator_type == "shell-model-wegner" or generator_type == "shell-model" or
+            generator_type == "shell-model-atan" or generator_type == "shell-model-imaginary-time")
+      collect_shell_model();
+   else if (generator_type == "shell-model-atan-npnh")
+      collect_shell_model_npnh();
+   else if (generator_type == "hartree-fock")
+      collect_hartree_fock();
+   else if (generator_type == "1PA")
+      collect_1pa();
+
+   return keys;
 }
 
 

@@ -1131,6 +1131,9 @@ namespace Commutator
   // It's not dramatically slower, but slow enough that we should only use it when we need it.
   void comm122ss_slower(const Operator &X, const Operator &Y, Operator &Z)
   {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("MPI IMSRG(2) does not yet support slower non-scalar commutator paths.");
+
     double t_start = omp_get_wtime();
     auto &X1 = X.OneBody;
     auto &Y1 = Y.OneBody;
@@ -1714,6 +1717,152 @@ namespace Commutator
     int nch = Z.modelspace->GetNumberTwoBodyChannels();
     int hZ = Z.IsHermitian() ? 1 : -1;
 
+    if (imsrg_mpi::OwnerOnlyStorageEnabled())
+    {
+      std::vector<int> ch_vec;
+      std::vector<int> ibra_vec;
+      for (int ch = 0; ch < nch; ++ch)
+      {
+        int nKets = Z.modelspace->GetTwoBodyChannel(ch).GetNumberKets();
+        for (int ibra = 0; ibra < nKets; ++ibra)
+        {
+          ch_vec.push_back(ch);
+          ibra_vec.push_back(ibra);
+        }
+      }
+
+      int nranks = imsrg_mpi::Size();
+      int nthreads = omp_get_max_threads();
+      std::vector<std::vector<std::vector<double>>> thread_send_buffers(
+        nthreads, std::vector<std::vector<double>>(nranks));
+
+      size_t nch_and_ibra = ch_vec.size();
+      #pragma omp parallel for schedule(dynamic, 1)
+      for (size_t ichbra = 0; ichbra < nch_and_ibra; ichbra++)
+      {
+        int tid = omp_get_thread_num();
+        int ch = ch_vec[ichbra];
+        int ibra = ibra_vec[ichbra];
+        int target_owner = imsrg_mpi::TwoBodyChannelOwner(*Z.modelspace, ch);
+
+        TwoBodyChannel &tbc = Z.modelspace->GetTwoBodyChannel(ch);
+        int J = tbc.J;
+        int nKets = tbc.GetNumberKets();
+
+        Ket &bra = tbc.GetKet(ibra);
+        int i = bra.p;
+        int j = bra.q;
+        Orbit &oi = Z.modelspace->GetOrbit(i);
+        Orbit &oj = Z.modelspace->GetOrbit(j);
+        double ji = oi.j2 / 2.;
+        double jj = oj.j2 / 2.;
+        int jji = oi.j2;
+        int jjj = oj.j2;
+        int ketmin = Z.IsHermitian() ? ibra : ibra + 1;
+        for (int iket = ketmin; iket < nKets; ++iket)
+        {
+          Ket &ket = tbc.GetKet(iket);
+          int k = ket.p;
+          int l = ket.q;
+          Orbit &ok = Z.modelspace->GetOrbit(k);
+          Orbit &ol = Z.modelspace->GetOrbit(l);
+          double jk = ok.j2 / 2.;
+          double jl = ol.j2 / 2.;
+          int jjk = ok.j2;
+          int jjl = ol.j2;
+
+          double commij = 0;
+          double commji = 0;
+
+          int parity_cc = (oi.l + ol.l) % 2;
+          int Tz_cc = std::abs(oi.tz2 - ol.tz2) / 2;
+          int Jpmin = std::max(std::abs(int(ji - jl)), std::abs(int(jk - jj)));
+          int Jpmax = std::min(int(ji + jl), int(jk + jj));
+          for (int Jprime = Jpmin; Jprime <= Jpmax; ++Jprime)
+          {
+            double sixj = Z.modelspace->GetCachedSixJ(jji, jjj, J, jjk, jjl, Jprime);
+            if (std::abs(sixj) < 1e-8)
+              continue;
+            int ch_cc = Z.modelspace->GetTwoBodyChannelIndex(Jprime, parity_cc, Tz_cc);
+            if (!imsrg_mpi::OwnsCrossCoupledChannel(*Z.modelspace, ch_cc))
+              continue;
+            TwoBodyChannel_CC &tbc_cc = Z.modelspace->GetTwoBodyChannel_CC(ch_cc);
+            int nkets_cc = tbc_cc.GetNumberKets();
+            int indx_il = tbc_cc.GetLocalIndex(std::min(i, l), std::max(i, l)) + (i > l ? nkets_cc : 0);
+            int indx_kj = tbc_cc.GetLocalIndex(std::min(j, k), std::max(j, k)) + (k > j ? nkets_cc : 0);
+            double me1 = Zbar[ch_cc](indx_il, indx_kj);
+            commij -= (2 * Jprime + 1) * sixj * me1;
+          }
+
+          if (k == l)
+          {
+            commji = commij;
+          }
+          else if (i == j)
+          {
+            commji = Z.modelspace->phase(ji + jj + jk + jl) * commij;
+          }
+          else
+          {
+            parity_cc = (oi.l + ok.l) % 2;
+            Tz_cc = std::abs(oi.tz2 - ok.tz2) / 2;
+            Jpmin = std::max(std::abs(int(jj - jl)), std::abs(int(jk - ji)));
+            Jpmax = std::min(int(jj + jl), int(jk + ji));
+            for (int Jprime = Jpmin; Jprime <= Jpmax; ++Jprime)
+            {
+              double sixj = Z.modelspace->GetCachedSixJ(jjj, jji, J, jjk, jjl, Jprime);
+              if (std::abs(sixj) < 1e-8)
+                continue;
+              int ch_cc = Z.modelspace->GetTwoBodyChannelIndex(Jprime, parity_cc, Tz_cc);
+              if (!imsrg_mpi::OwnsCrossCoupledChannel(*Z.modelspace, ch_cc))
+                continue;
+              TwoBodyChannel_CC &tbc_cc = Z.modelspace->GetTwoBodyChannel_CC(ch_cc);
+              int nkets_cc = tbc_cc.GetNumberKets();
+              int indx_ik = tbc_cc.GetLocalIndex(std::min(i, k), std::max(i, k)) + (i > k ? nkets_cc : 0);
+              int indx_lj = tbc_cc.GetLocalIndex(std::min(l, j), std::max(l, j)) + (l > j ? nkets_cc : 0);
+              double me1 = Zbar[ch_cc](indx_ik, indx_lj);
+              commji -= (2 * Jprime + 1) * sixj * me1;
+            }
+          }
+
+          double norm = bra.delta_pq() == ket.delta_pq() ? 1 + bra.delta_pq() : PhysConst::SQRT2;
+          double zijkl = -(commij - Z.modelspace->phase(jk + jl - J) * commji) / norm;
+          if (std::abs(zijkl) < 1e-14)
+            continue;
+
+          auto &buffer = thread_send_buffers[tid][target_owner];
+          buffer.push_back(static_cast<double>(ch));
+          buffer.push_back(static_cast<double>(ibra));
+          buffer.push_back(static_cast<double>(iket));
+          buffer.push_back(zijkl);
+        } // for iket
+      } // for ichbra
+
+      std::vector<std::vector<double>> send_buffers(nranks);
+      for (int tid = 0; tid < nthreads; ++tid)
+      {
+        for (int rank = 0; rank < nranks; ++rank)
+        {
+          auto &src = thread_send_buffers[tid][rank];
+          send_buffers[rank].insert(send_buffers[rank].end(), src.begin(), src.end());
+        }
+      }
+
+      std::vector<double> received = imsrg_mpi::AlltoallvDoubles(send_buffers);
+      for (size_t ipacket = 0; ipacket + 3 < received.size(); ipacket += 4)
+      {
+        int ch = static_cast<int>(received[ipacket]);
+        int ibra = static_cast<int>(received[ipacket + 1]);
+        int iket = static_cast<int>(received[ipacket + 2]);
+        double zijkl = received[ipacket + 3];
+        auto &ZMat = Z.TwoBody.GetMatrix(ch, ch);
+        ZMat(ibra, iket) += zijkl;
+        if (ibra != iket)
+          ZMat(iket, ibra) += hZ * zijkl;
+      }
+      return;
+    }
+
     // Collapse two outer loops into one for better load balancing
     std::vector<int> ch_vec;
     std::vector<int> ibra_vec;
@@ -1955,6 +2104,9 @@ namespace Commutator
       std::deque<arma::mat> Z_bar(nch);
       for (size_t ch = 0; ch < nch; ch++)
       {
+        if (imsrg_mpi::OwnerOnlyStorageEnabled() &&
+            !imsrg_mpi::OwnsCrossCoupledChannel(*Z.modelspace, ch))
+          continue;
         size_t nKets_cc = Z.modelspace->GetTwoBodyChannel_CC(ch).GetNumberKets();
         Z_bar[ch].zeros(nKets_cc, 2 * nKets_cc);
       }
@@ -2026,15 +2178,6 @@ namespace Commutator
         Zbar_ch.tail_cols(nKets_cc) += Zbar_ch.tail_cols(nKets_cc).t() % PhaseMatZ;
       }
 
-      if (imsrg_mpi::OwnerOnlyStorageEnabled())
-      {
-        for (size_t ch = 0; ch < nch; ++ch)
-        {
-          int owner = imsrg_mpi::CrossCoupledChannelOwner(*Z.modelspace, ch);
-          imsrg_mpi::BroadcastMatrixFromRank(Z_bar[ch], owner);
-        }
-      }
-
       X.profiler.timer["Build Z_bar"] += omp_get_wtime() - t_start;
 
       // Perform inverse Pandya transform on Z_bar to get Z
@@ -2055,6 +2198,9 @@ namespace Commutator
   // A much slower, but more straighforward implementation which can handle parity and isospin changing operators.
   void comm222_phss_slower(const Operator &X, const Operator &Y, Operator &Z)
   {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("MPI IMSRG(2) does not yet support slower non-scalar commutator paths.");
+
     double t_start = omp_get_wtime();
     auto &X2 = X.TwoBody;
     auto &Y2 = Y.TwoBody;

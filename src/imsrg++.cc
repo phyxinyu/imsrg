@@ -134,7 +134,7 @@ int main(int argc, char** argv)
   {
     std::cout << "Using experimental MPI IMSRG(2) scalar flow with "
               << imsrg_mpi::Size()
-              << " ranks (owner-compute, replicated TwoBodyME storage)." << std::endl;
+              << " ranks (owner-only two-body storage)." << std::endl;
   }
 
   int eMax = parameters.i("emax");

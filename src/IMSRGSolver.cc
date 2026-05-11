@@ -14,6 +14,15 @@
 #include <boost/numeric/odeint.hpp>
 #endif
 
+namespace
+{
+  void AbortIfMpiUnsupportedSolver(const std::string& solver_name)
+  {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("MPI IMSRG(2) does not yet support direct calls to " + solver_name + ".");
+  }
+}
+
 IMSRGSolver::~IMSRGSolver()
 {
   CleanupScratch();
@@ -337,6 +346,8 @@ void IMSRGSolver::Solve_magnus_euler()
 /// Modification added by Matthias
 void IMSRGSolver::Solve_magnus_backoff()
 {
+  AbortIfMpiUnsupportedSolver(__func__);
+
   istep = 0;
 
   generator.Update(FlowingOps[0], Eta);
@@ -462,6 +473,8 @@ void IMSRGSolver::Solve_magnus_backoff()
 
 void IMSRGSolver::Solve_magnus_modified_euler()
 {
+  AbortIfMpiUnsupportedSolver(__func__);
+
   istep = 0;
   //   generator.Update(&FlowingOps[0],&Eta);
   generator.Update(FlowingOps[0], Eta);
@@ -519,6 +532,8 @@ void IMSRGSolver::Solve_magnus_modified_euler()
 // Solve with fixed-step 4th-order Runge-Kutta
 void IMSRGSolver::Solve_flow_RK4()
 {
+  AbortIfMpiUnsupportedSolver(__func__);
+
   istep = 0;
   generator.Update(FlowingOps[0], Eta);
 
@@ -784,6 +799,7 @@ namespace boost
 
 void IMSRGSolver::Solve_ode()
 {
+  AbortIfMpiUnsupportedSolver(__func__);
 
   ode_mode = "H";
   WriteFlowStatusHeader(std::cout);
@@ -801,6 +817,8 @@ void IMSRGSolver::Solve_ode()
 
 void IMSRGSolver::Solve_ode_adaptive()
 {
+  AbortIfMpiUnsupportedSolver(__func__);
+
   ode_mode = "H";
   if (method == "restore_4th_order")
     ode_mode = "Restored";
@@ -916,6 +934,8 @@ void IMSRGSolver::operator()(const std::deque<Operator> &x, std::deque<Operator>
 
 void IMSRGSolver::Solve_ode_magnus()
 {
+  AbortIfMpiUnsupportedSolver(__func__);
+
   ode_mode = "Omega";
   WriteFlowStatus(std::cout);
   WriteFlowStatus(flowfile);
@@ -1233,6 +1253,8 @@ void IMSRGSolver::WriteFlowStatus(std::string fname)
 void IMSRGSolver::WriteFlowStatus(std::ostream &f)
 {
   auto &H_s = FlowingOps[0];
+  // These calls are MPI collectives in owner-only mode, so every rank must
+  // participate before non-root ranks return without writing.
   double h_norm = imsrg_mpi::Norm(H_s);
   double omega_one_body_norm = imsrg_mpi::OneBodyNorm(Omega.back());
   double omega_two_body_norm = imsrg_mpi::TwoBodyNorm(Omega.back());
@@ -1240,10 +1262,9 @@ void IMSRGSolver::WriteFlowStatus(std::ostream &f)
   double eta_one_body_norm = imsrg_mpi::OneBodyNorm(Eta);
   double eta_two_body_norm = imsrg_mpi::TwoBodyNorm(Eta);
   double eta_three_body_norm = imsrg_mpi::ThreeBodyNorm(Eta);
-  imsrg_mpi::PrefetchTwoBodyMatrices(H_s);
+  double mp2_energy = imsrg_mpi::MP2Energy(H_s);
   if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
   {
-    imsrg_mpi::ClearTwoBodyCache(H_s);
     return;
   }
   if (f.good())
@@ -1263,14 +1284,13 @@ void IMSRGSolver::WriteFlowStatus(std::ostream &f)
       << std::setw(fwidth) << std::setprecision(fprecision) << eta_two_body_norm
       << std::setw(fwidth) << std::setprecision(fprecision) << eta_three_body_norm
       << std::setw(7) << std::setprecision(0) << profiler.counter["N_ScalarCommutators"] + profiler.counter["N_TensorCommutators"]
-      << std::setw(fwidth) << std::setprecision(fprecision) << H_s.GetMP2_Energy()
+      << std::setw(fwidth) << std::setprecision(fprecision) << mp2_energy
       << std::setw(7) << std::setprecision(0) << profiler.counter["N_Operators"]
       << std::setprecision(fprecision)
       << std::setw(12) << std::setprecision(3) << profiler.GetTimes()["real"]
       << std::setw(12) << std::setprecision(3) << profiler.CheckMem()["RSS"] / 1024. << " / " << std::skipws << profiler.MaxMemUsage() / 1024. << std::fixed
       << std::endl;
   }
-  imsrg_mpi::ClearTwoBodyCache(H_s);
 }
 
 void IMSRGSolver::WriteFlowStatusHeader(std::string fname)

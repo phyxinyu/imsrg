@@ -23,7 +23,10 @@
 #include "ModelSpace.hh"
 #include "Operator.hh"
 
+#include <array>
+#include <cstddef>
 #include <string>
+#include <vector>
 
 
 class Generator
@@ -79,6 +82,7 @@ class Generator
   void ConstructGenerator_ShellModel_NpNh(std::function<double(double,double)>& eta_func);
   void ConstructGenerator_HartreeFock();
   void ConstructGenerator_1PA(std::function<double(double,double)>& eta_func);
+  std::vector<std::array<std::size_t, 2>> GetDenominatorMatrixKeys(Operator& H_s, Operator& Eta_s);
   void SetOnly2bEta(bool tf){only_2b_eta = tf;};
   void SetOnly1bEta(bool tf) { only_1b_eta = tf; };
   double Get1bDenominator(int i, int j);
