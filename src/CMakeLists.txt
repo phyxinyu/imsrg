@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 set(INSTDIR $ENV{HOME})
-set(BLA_VENDOR OpenBLAS)
+set(IMSRG_LOCAL_PREFIX "/tns/xuxinyu/usr" CACHE PATH "Local dependency prefix")
+set(BLA_VENDOR Generic CACHE STRING "BLAS vendor")
 # set(CMAKE_SKIP_INSTALL_RPATH ON)
 # set(CMAKE_SYSTEM_PREFIX_PATH $ENV{EBROOTGENTOO})
 
@@ -11,6 +12,24 @@ option(IMSRG_USE_MPI "Build optional MPI support for scalar IMSRG(2)" OFF)
 # e.g. maybe you want a different BLAS, or maybe you need to
 # explicitly set some additional variables for whatever reason
 include(local_settings.cmake OPTIONAL)
+
+if(EXISTS "${IMSRG_LOCAL_PREFIX}")
+    list(PREPEND CMAKE_PREFIX_PATH "${IMSRG_LOCAL_PREFIX}")
+    list(PREPEND CMAKE_INCLUDE_PATH "${IMSRG_LOCAL_PREFIX}/include")
+    list(PREPEND CMAKE_LIBRARY_PATH "${IMSRG_LOCAL_PREFIX}/lib")
+    include_directories(SYSTEM "${IMSRG_LOCAL_PREFIX}/include")
+    link_directories("${IMSRG_LOCAL_PREFIX}/lib")
+endif()
+
+if(EXISTS "${IMSRG_LOCAL_PREFIX}/lib/libgsl.so")
+    set(GSL_LIBRARY "${IMSRG_LOCAL_PREFIX}/lib/libgsl.so" CACHE FILEPATH "GSL library" FORCE)
+endif()
+if(EXISTS "${IMSRG_LOCAL_PREFIX}/lib/libgslcblas.so")
+    set(GSL_CBLAS_LIBRARY "${IMSRG_LOCAL_PREFIX}/lib/libgslcblas.so" CACHE FILEPATH "GSL CBLAS library" FORCE)
+endif()
+if(EXISTS "${IMSRG_LOCAL_PREFIX}/include/gsl/gsl_version.h")
+    set(GSL_INCLUDE_DIR "${IMSRG_LOCAL_PREFIX}/include" CACHE PATH "GSL include directory" FORCE)
+endif()
 
 # Determine if imsrg++ is built as a subproject (using add_subdirectory)
 # or if it is the main project.
@@ -52,7 +71,43 @@ find_package(OpenMP REQUIRED COMPONENTS CXX)
 if(IMSRG_USE_MPI)
     find_package(MPI REQUIRED COMPONENTS CXX)
 endif()
-find_package(BLAS REQUIRED)
+find_package(BLAS)
+if(NOT BLAS_FOUND)
+    set(BLAS_LIBRARIES
+        "-L${IMSRG_LOCAL_PREFIX}/lib"
+        "-lz"
+        "-lgslcblas"
+        "-lgsl"
+        "-lblas"
+        "-lcblas"
+        "-llapack"
+        CACHE STRING "Fallback BLAS/LAPACK link flags" FORCE
+    )
+    set(BLAS_FOUND TRUE)
+    message(STATUS "Using fallback BLAS/LAPACK link flags: ${BLAS_LIBRARIES}")
+endif()
+if(NOT TARGET BLAS::BLAS)
+    add_library(BLAS::BLAS INTERFACE IMPORTED)
+    set_target_properties(BLAS::BLAS PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${BLAS_LIBRARIES}"
+    )
+endif()
+find_package(LAPACK)
+if(NOT LAPACK_FOUND)
+    set(LAPACK_LIBRARIES
+        "-L${IMSRG_LOCAL_PREFIX}/lib"
+        "-llapack"
+        CACHE STRING "Fallback LAPACK link flags" FORCE
+    )
+    set(LAPACK_FOUND TRUE)
+    message(STATUS "Using fallback LAPACK link flags: ${LAPACK_LIBRARIES}")
+endif()
+if(NOT TARGET LAPACK::LAPACK)
+    add_library(LAPACK::LAPACK INTERFACE IMPORTED)
+    set_target_properties(LAPACK::LAPACK PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${LAPACK_LIBRARIES}"
+    )
+endif()
 find_package(GSL REQUIRED)
 find_package(Boost REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -749,6 +804,8 @@ target_link_libraries(
     PhysicalConstants
     RPA
     MpiSupport
+    BLAS::BLAS
+    LAPACK::LAPACK
 )
 set_target_properties(IMSRG PROPERTIES SUFFIX ".so")
 
@@ -766,6 +823,8 @@ target_link_libraries(
     Version
     MpiSupport
     OpenMP::OpenMP_CXX
+    BLAS::BLAS
+    LAPACK::LAPACK
 )
 
 

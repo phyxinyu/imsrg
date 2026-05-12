@@ -3,6 +3,7 @@ build/
 build-mpi/
 output/
 work/scripts/output/
+imsrg_log/
 #CMake output files
 CMakeFiles/
 CMakeCache.txt

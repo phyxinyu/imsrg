@@ -1,4 +1,4 @@
-set(BLA_VENDOR OpenBLAS)
+set(BLA_VENDOR Generic CACHE STRING "BLAS vendor")
 add_library(
     armadillo
     INTERFACE
@@ -12,4 +12,5 @@ target_link_libraries(
     armadillo
     INTERFACE
     BLAS::BLAS
+    LAPACK::LAPACK
 )
