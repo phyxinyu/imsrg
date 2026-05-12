@@ -3,6 +3,7 @@
 #include "ModelSpace.hh"
 #include "PhysicalConstants.hh"
 #include "AngMom.hh"
+#include "MpiSupport.hh"
 #include <iomanip>
 #include <vector>
 #include <array>
@@ -1093,8 +1094,13 @@ Operator HartreeFock::GetNormalOrderedH(int particle_rank)
    HNO.OneBody = C.t() * F * C;
 
    int nchan = modelspace->GetNumberTwoBodyChannels();
+   if (imsrg_mpi::Enabled())
+     imsrg_mpi::EnsureChannelOwnership(*modelspace);
    for (int ch=0;ch<nchan;++ch)
    {
+     if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*modelspace, ch))
+       continue;
+
      TwoBodyChannel& tbc = modelspace->GetTwoBodyChannel(ch);
      int J = tbc.J;
      int npq = tbc.GetNumberKets();
@@ -1162,6 +1168,17 @@ Operator HartreeFock::GetNormalOrderedH(int particle_rank)
 
 
    profiler.timer["HF_GetNormalOrderedH"] += omp_get_wtime() - start_time;
+
+   if (imsrg_mpi::Enabled())
+   {
+     for (auto it = HNO.TwoBody.MatEl.begin(); it != HNO.TwoBody.MatEl.end();)
+     {
+       if (imsrg_mpi::TwoBodyChannelOwner(*modelspace, it->first[0]) == imsrg_mpi::Rank())
+         ++it;
+       else
+         it = HNO.TwoBody.MatEl.erase(it);
+     }
+   }
 
    return HNO;
 
@@ -1718,5 +1735,4 @@ double HartreeFock::GetTransformed3bme( Operator& OpIn, int Jab, int Jde, int J2
   } // for alpha
   return V_hf;
 }
-
 

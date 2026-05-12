@@ -722,6 +722,11 @@ int main(int argc, char** argv)
     HNO = Hbare.DoNormalOrdering();
   }
 
+  if (input3bme_type == "no2b")
+  {
+    HNO.ThreeBody.Deallocate();
+  }
+
   if (perturbative_triples)
   {
 //    modelspace.SetdE3max(dE3max);

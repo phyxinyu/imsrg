@@ -1,8 +1,31 @@
 
 #include "ThreeBodyStorage_no2b.hh"
 #include "AngMom.hh"
+#include "MpiSupport.hh"
 
 #include <omp.h>
+
+namespace
+{
+  constexpr size_t kDefault3NReadChunkElements = 50 * 1000 * 1000;
+
+  bool MpiRankNeedsNo2bChannel(ModelSpace* modelspace, int J2, int P2)
+  {
+    if (!imsrg_mpi::Enabled() || modelspace == nullptr)
+      return true;
+
+    imsrg_mpi::EnsureChannelOwnership(*modelspace);
+    size_t nchannels = modelspace->GetNumberTwoBodyChannels();
+    for (size_t ch = 0; ch < nchannels; ++ch)
+    {
+      TwoBodyChannel& tbc = modelspace->GetTwoBodyChannel(ch);
+      if (tbc.J == J2 && tbc.parity == P2 &&
+          imsrg_mpi::TwoBodyChannelOwner(*modelspace, ch) == imsrg_mpi::Rank())
+        return true;
+    }
+    return false;
+  }
+}
 
 
 
@@ -199,6 +222,7 @@ void ThreeBodyStorage_no2b<StoreType>::Allocate()
   for (int ch=0; ch<threebodyspace.NChannels; ch++)
   {
     ThreeBodyChannelNO2B& ch_no2b = threebodyspace.ThreeBodyChannels.at(ch);
+    if (!MpiRankNeedsNo2bChannel(modelspace, ch_no2b.J2, ch_no2b.P2)) continue;
     size_t n = ch_no2b.Ndim;
 
     MatEl[ch] = std::vector<StoreType>( n*(n+1)/2, StoreType(0.0));
@@ -293,6 +317,7 @@ void ThreeBodyStorage_no2b<StoreType>::SetME_iso_no2b(int a, int b, int c, int T
  
    int ch = threebodyspace.GetChannelIndex(J2,P2,J1,P1,twoT);
    if (ch==-1) return;
+   if (!MpiRankNeedsNo2bChannel(modelspace, J2, P2)) return;
    ThreeBodyChannelNO2B & ch_no2b = threebodyspace.ThreeBodyChannels[ch];
    
    int key_bra = ch_no2b.GetIndex(a,b,c,Tab);
@@ -342,6 +367,7 @@ ThreeBodyStorage::ME_type ThreeBodyStorage_no2b<StoreType>::GetME_iso_no2b(int a
 
   int ch = threebodyspace.GetChannelIndex(J2,P2,J1,P1,twoT);
   if (ch==-1) return vout;
+  if (MatEl.find(ch) == MatEl.end()) return vout;
   const ThreeBodyChannelNO2B & ch_no2b = threebodyspace.ThreeBodyChannels[ch];
   int key_bra = ch_no2b.GetIndex(a,b,c,Tab);
   int key_ket = ch_no2b.GetIndex(d,e,f,Tde);
@@ -552,7 +578,7 @@ template<class StoreType>
 void ThreeBodyStorage_no2b<StoreType>::ReadFile( std::vector<std::string>& StringInputs, std::vector<int>& IntInputs )
 {
    double t_start = omp_get_wtime();
-   const size_t MAX_READ = 8* 1024*1024*1024L; // Read in 8 GB chunks
+   const size_t MAX_READ = kDefault3NReadChunkElements;
  
    if ( ( StringInputs.size()<1 ) or ( IntInputs.size()<2) )
    {
@@ -815,7 +841,3 @@ void ThreeBodyStorage_no2b<StoreType>::ReadFile( std::vector<std::string>& Strin
 
 template class ThreeBodyStorage_no2b<ME_single_type>;
 template class ThreeBodyStorage_no2b<ME_half_type>;
-
-
-
-

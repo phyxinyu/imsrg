@@ -4,6 +4,6 @@
 
 namespace version {
 std::string BuildVersion() {
-    return "master_db9be4a+";
+    return "master_a270b12+";
 }
 }

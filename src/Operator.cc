@@ -2,6 +2,7 @@
 #include "Operator.hh"
 #include "AngMom.hh"
 #include "IMSRGProfiler.hh"
+#include "MpiSupport.hh"
 #include "PhysicalConstants.hh" // for SQRT2
 #include <cmath>
 #include <iostream>
@@ -597,6 +598,17 @@ Operator Operator::DoNormalOrdering3(int sign, std::set<index_t> occupied) const
   opNO3.is_reduced = this->is_reduced;
   opNO3.hermitian = this->hermitian;
   opNO3.antihermitian = this->antihermitian;
+  auto restrict_to_owned_two_body = [this](Operator& op) {
+    if (!imsrg_mpi::Enabled() || !op.TwoBody.IsAllocated()) return;
+    imsrg_mpi::EnsureChannelOwnership(*modelspace);
+    for (auto it = op.TwoBody.MatEl.begin(); it != op.TwoBody.MatEl.end();)
+    {
+      if (imsrg_mpi::TwoBodyChannelOwner(*modelspace, it->first[0]) == imsrg_mpi::Rank())
+        ++it;
+      else
+        it = op.TwoBody.MatEl.erase(it);
+    }
+  };
   std::vector<int> ch_bra_list, ch_ket_list;
   //   std::vector<arma::mat *> mat_ptr_list;
   for (auto &itmat : opNO3.TwoBody.MatEl)
@@ -611,6 +623,8 @@ Operator Operator::DoNormalOrdering3(int sign, std::set<index_t> occupied) const
   {
     int ch_bra = ch_bra_list[iter];
     int ch_ket = ch_ket_list[iter];
+    if (imsrg_mpi::Enabled() && !imsrg_mpi::OwnsTwoBodyChannel(*modelspace, ch_bra))
+      continue;
     auto &Gamma = opNO3.TwoBody.GetMatrix(ch_bra, ch_ket);
     TwoBodyChannel &tbc_bra = modelspace->GetTwoBodyChannel(ch_bra);
     TwoBodyChannel &tbc_ket = modelspace->GetTwoBodyChannel(ch_ket);
@@ -651,10 +665,18 @@ Operator Operator::DoNormalOrdering3(int sign, std::set<index_t> occupied) const
   Operator opNO2 = opNO3.DoNormalOrdering2(sign, occupied);
   opNO2.ScaleZeroBody(1. / 3.);
   opNO2.ScaleOneBody(1. / 2.);
+  if (imsrg_mpi::Enabled())
+  {
+    imsrg_mpi::AllreduceInPlace(opNO2.ZeroBody);
+    imsrg_mpi::AllreduceInPlace(opNO2.OneBody);
+    restrict_to_owned_two_body(opNO2);
+  }
   std::cout << __func__ << "  contributed " << opNO2.ZeroBody << "  to the zero body part" << std::endl;
   std::cout << " Parent operator is reduced? " << IsReduced() << "  opNO2 is reduced? " << opNO2.IsReduced() << "   is opNO3 reduced? " << opNO3.IsReduced() << std::endl;
   // Also normal order the 1 and 2 body pieces
-  opNO2 += DoNormalOrdering2(sign, occupied);
+  Operator opNO2_parent = DoNormalOrdering2(sign, occupied);
+  restrict_to_owned_two_body(opNO2_parent);
+  opNO2 += opNO2_parent;
   opNO2.ThreeBody.SetMode("pn");
 
   IMSRGProfiler::timer[__func__] += omp_get_wtime() - t_start;
