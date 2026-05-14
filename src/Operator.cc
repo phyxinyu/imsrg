@@ -401,7 +401,7 @@ Operator Operator::DoNormalOrdering() const
   if ( this->GetParticleRank() >= 3 )
     return DoNormalOrdering3(+1, modelspace->holes);
   else
-    return DoNormalOrdering2(+1, modelspace->holes);
+    return DoNormalOrdering2(+1, modelspace->holes, imsrg_mpi::OwnerOnlyStorageEnabled());
 }
 
 Operator Operator::UndoNormalOrdering() const
@@ -412,7 +412,7 @@ Operator Operator::UndoNormalOrdering() const
   if ( this->GetParticleRank() >=3)
     return DoNormalOrdering3(-1, modelspace->holes);
   else
-    return DoNormalOrdering2(-1, modelspace->holes);
+    return DoNormalOrdering2(-1, modelspace->holes, imsrg_mpi::OwnerOnlyStorageEnabled());
 }
 
 Operator Operator::UndoNormalOrderingCore() const
@@ -423,7 +423,7 @@ Operator Operator::UndoNormalOrderingCore() const
   if (this->GetParticleRank() >= 3)
     return DoNormalOrdering3(-1, modelspace->core);
   else
-    return DoNormalOrdering2(-1, modelspace->core);
+    return DoNormalOrdering2(-1, modelspace->core, imsrg_mpi::OwnerOnlyStorageEnabled());
 }
 
 // Operator Operator::UndoNormalOrdering2() const
@@ -449,7 +449,7 @@ Operator Operator::DoNormalOrderingCore() const
   if ( this->GetParticleRank() >= 3 )
     return DoNormalOrdering3(+1, modelspace->core);
   else
-    return DoNormalOrdering2(+1, modelspace->core);
+    return DoNormalOrdering2(+1, modelspace->core, imsrg_mpi::OwnerOnlyStorageEnabled());
 }
 
 
@@ -461,7 +461,7 @@ Operator Operator::DoNormalOrderingFilledValence() const
    if (legs>5)
       return DoNormalOrdering3(+1, modelspace->valence);
    else
-      return DoNormalOrdering2(+1, modelspace->valence);
+      return DoNormalOrdering2(+1, modelspace->valence, imsrg_mpi::OwnerOnlyStorageEnabled());
 }
 
 
@@ -683,7 +683,9 @@ Operator Operator::DoNormalOrdering3(int sign, std::set<index_t> occupied) const
     }
   }
 //  opNO3.Symmetrize();
-  Operator opNO2 = opNO3.DoNormalOrdering2(sign, occupied);
+  // opNO3 is filled only on the scalar two-body channel owner ranks, even before
+  // resident owner-only storage is enabled. Its 0b/1b contractions must be summed.
+  Operator opNO2 = opNO3.DoNormalOrdering2(sign, occupied, imsrg_mpi::Enabled());
   opNO2.ScaleZeroBody(1. / 3.);
   opNO2.ScaleOneBody(1. / 2.);
   if (imsrg_mpi::Enabled())
@@ -693,7 +695,9 @@ Operator Operator::DoNormalOrdering3(int sign, std::set<index_t> occupied) const
   std::cout << __func__ << "  contributed " << opNO2.ZeroBody << "  to the zero body part" << std::endl;
   std::cout << " Parent operator is reduced? " << IsReduced() << "  opNO2 is reduced? " << opNO2.IsReduced() << "   is opNO3 reduced? " << opNO3.IsReduced() << std::endl;
   // Also normal order the 1 and 2 body pieces
-  Operator opNO2_parent = DoNormalOrdering2(sign, occupied);
+  // The parent 0b/1b/2b operator is still replicated during initial Hbare normal
+  // ordering, so reducing it would multiply the same contribution by the rank count.
+  Operator opNO2_parent = DoNormalOrdering2(sign, occupied, imsrg_mpi::OwnerOnlyStorageEnabled());
   restrict_to_owned_two_body(opNO2_parent);
   opNO2 += opNO2_parent;
   opNO2.SetParticleRank(2);
