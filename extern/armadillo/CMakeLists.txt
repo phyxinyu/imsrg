@@ -1,4 +1,3 @@
-set(BLA_VENDOR Generic CACHE STRING "BLAS vendor")
 add_library(
     armadillo
     INTERFACE

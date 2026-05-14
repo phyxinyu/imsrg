@@ -1,4 +1,3 @@
-set(BLA_VENDOR OpenBLAS)
 add_library(
     armadillo
     INTERFACE
@@ -12,4 +11,5 @@ target_link_libraries(
     armadillo
     INTERFACE
     BLAS::BLAS
+    LAPACK::LAPACK
 )

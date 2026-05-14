@@ -176,7 +176,7 @@ class Operator
   // Undoing normal ordering is equivalent to doing normal ordering with negative occupations.
   // So the occupations na,nb etc are all multiplied by the sign passed to the methods.
   Operator DoNormalOrdering() const; ///< Calls DoNormalOrdering2() or DoNormalOrdering3(), depending on the rank of the operator.
-  Operator DoNormalOrdering2(int sign, std::set<index_t> occupied) const; ///< Returns the normal ordered two-body operator
+  Operator DoNormalOrdering2(int sign, std::set<index_t> occupied, bool mpi_allreduce=true) const; ///< Returns the normal ordered two-body operator
   Operator DoNormalOrdering3(int sign, std::set<index_t> occupied) const; ///< Returns the normal ordered three-body operator
   Operator DoNormalOrderingCore() const; ///< Normal order with respect to core
   Operator DoNormalOrderingFilledValence() const; ///< Normal order with respect to a filled valence space
@@ -235,4 +235,3 @@ Operator operator*(const double lhs, const Operator&& rhs);
 
 
 #endif
-

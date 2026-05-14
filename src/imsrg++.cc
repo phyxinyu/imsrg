@@ -52,12 +52,67 @@
 #include <fstream>
 #include <stdio.h>
 #include <string>
+#include <sys/resource.h>
 #include <omp.h>
 #include "IMSRG.hh"
 #include "MpiSupport.hh"
 #include "Parameters.hh"
 #include "PhysicalConstants.hh"
 #include "version.hh"
+
+namespace
+{
+  long ReadProcStatusKb(const std::string& field)
+  {
+    std::ifstream status("/proc/self/status");
+    std::string key;
+    while (status >> key)
+    {
+      if (key == field + ":")
+      {
+        long value = -1;
+        std::string unit;
+        status >> value >> unit;
+        return value;
+      }
+
+      std::string rest_of_line;
+      std::getline(status, rest_of_line);
+    }
+    return -1;
+  }
+
+  double KbToMb(long kb)
+  {
+    return kb < 0 ? -1.0 : static_cast<double>(kb) / 1024.0;
+  }
+
+  void PrintRankMemorySnapshot(const std::string& label)
+  {
+    struct rusage usage;
+    long ru_maxrss_kb = -1;
+    if (getrusage(RUSAGE_SELF, &usage) == 0)
+    {
+      ru_maxrss_kb = usage.ru_maxrss;
+    }
+
+    const long vmrss_kb = ReadProcStatusKb("VmRSS");
+    const long vmhwm_kb = ReadProcStatusKb("VmHWM");
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3)
+        << "MEMORY_RANK label=" << label
+        << " rank=" << imsrg_mpi::Rank()
+        << " ranks=" << imsrg_mpi::Size()
+        << " VmRSS_kB=" << vmrss_kb
+        << " VmHWM_kB=" << vmhwm_kb
+        << " ru_maxrss_kB=" << ru_maxrss_kb
+        << " VmRSS_MB=" << KbToMb(vmrss_kb)
+        << " VmHWM_MB=" << KbToMb(vmhwm_kb)
+        << " ru_maxrss_MB=" << KbToMb(ru_maxrss_kb);
+    std::cout << out.str() << std::endl;
+  }
+}
 
 struct OpFromFile {
    std::string file2name,file3name,opname;
@@ -71,6 +126,10 @@ int main(int argc, char** argv)
   {
     ~MpiFinalizer() { imsrg_mpi::Finalize(); }
   } mpi_finalizer;
+  struct MpiMemoryReporter
+  {
+    ~MpiMemoryReporter() { PrintRankMemorySnapshot("final"); }
+  } mpi_memory_reporter;
 
   // Default parameters, and everything passed by command line args.
   if (imsrg_mpi::IsRoot())
@@ -767,7 +826,7 @@ int main(int argc, char** argv)
 
   HNO -= BetaCM * 1.5*hwBetaCM; // This is just the zero-body piece. The other stuff was added earlier.
   std::cout << "Hbare 0b = " << std::setprecision(8) << HNO.ZeroBody << std::endl;
-
+/* xu ignore perturbative gs energy
   if (method != "HF")
   {
     std::cout << "Perturbative estimates of gs energy:" << std::endl;
@@ -785,6 +844,7 @@ int main(int argc, char** argv)
 
 
   std::cout << "done with perterbative stuff, method = " << method << std::endl;
+  */
   // Calculate all the desired operators. If we're using magnus, we'll do this after the flow is over
   if ( method != "magnus" )
   {
@@ -1033,7 +1093,7 @@ int main(int argc, char** argv)
 //      HNO.ThreeBody.SwitchToPN_and_discard();
     }
   }
-
+/*. xu ignore perturbative gs energy
  // After truncating, get the perturbative energies again to see how much things changed.
   if (eMax_imsrg != eMax)
   {
@@ -1048,7 +1108,7 @@ int main(int argc, char** argv)
     std::cout << "E3_pp = " << Emp_3[0] << "  E3_hh = " << Emp_3[1] << " E3_ph = " << Emp_3[2] << "   EMP3 = " << EMP3 << std::endl;
     std::cout << "To 3rd order, E = " << HNO.ZeroBody + EMP2 + EMP3 + EMP2_3B << std::endl;
   }
-
+*/
   if ( method == "MP3" )
   {
     HNO.PrintTimes();
@@ -1309,11 +1369,11 @@ int main(int argc, char** argv)
       HNO.SetParticleRank(2);
     }
 
-    HNO = HNO.UndoNormalOrdering();
+    HNO = HNO.DoNormalOrdering2(-1, modelspace_imsrg.holes, false);
     
     // HNO.SetModelSpace(ms2);
     std::cout << "Doing NO wrt A=" << ms2.GetAref() << " Z=" << ms2.GetZref() << "  norbits = " << ms2.GetNumberOrbits() << std::endl;
-    HNO = HNO.DoNormalOrderingCore();
+    HNO = HNO.DoNormalOrdering2(+1, ms2.core, false);
     // HNO = HNO.DoNormalOrdering();
 
     imsrgsolver.FlowingOps[0] = HNO;

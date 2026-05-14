@@ -4,6 +4,6 @@
 
 namespace version {
 std::string BuildVersion() {
-    return "master_a270b12+";
+    return "master_5f6700a+";
 }
 }

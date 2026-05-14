@@ -1,35 +1,18 @@
 cmake_minimum_required(VERSION 3.18)
 set(INSTDIR $ENV{HOME})
-set(IMSRG_LOCAL_PREFIX "/tns/xuxinyu/usr" CACHE PATH "Local dependency prefix")
-set(BLA_VENDOR Generic CACHE STRING "BLAS vendor")
 # set(CMAKE_SKIP_INSTALL_RPATH ON)
 # set(CMAKE_SYSTEM_PREFIX_PATH $ENV{EBROOTGENTOO})
 
 option(IMSRG_BUILD_PYTHON_BINDINGS "Build Python bindings" OFF)
 option(IMSRG_USE_MPI "Build optional MPI support for scalar IMSRG(2)" OFF)
+option(USE_ARMADILLO_EXTERN "Use version of armadillo in extern" ON)
+set(IMSRG_PLATFORM "" CACHE STRING "Dependency platform preset. Empty means auto-detect; valid values: linux, macos")
+set_property(CACHE IMSRG_PLATFORM PROPERTY STRINGS "" linux macos)
 
 # Place to put any settings for quirks of your specific environment
 # e.g. maybe you want a different BLAS, or maybe you need to
 # explicitly set some additional variables for whatever reason
 include(local_settings.cmake OPTIONAL)
-
-if(EXISTS "${IMSRG_LOCAL_PREFIX}")
-    list(PREPEND CMAKE_PREFIX_PATH "${IMSRG_LOCAL_PREFIX}")
-    list(PREPEND CMAKE_INCLUDE_PATH "${IMSRG_LOCAL_PREFIX}/include")
-    list(PREPEND CMAKE_LIBRARY_PATH "${IMSRG_LOCAL_PREFIX}/lib")
-    include_directories(SYSTEM "${IMSRG_LOCAL_PREFIX}/include")
-    link_directories("${IMSRG_LOCAL_PREFIX}/lib")
-endif()
-
-if(EXISTS "${IMSRG_LOCAL_PREFIX}/lib/libgsl.so")
-    set(GSL_LIBRARY "${IMSRG_LOCAL_PREFIX}/lib/libgsl.so" CACHE FILEPATH "GSL library" FORCE)
-endif()
-if(EXISTS "${IMSRG_LOCAL_PREFIX}/lib/libgslcblas.so")
-    set(GSL_CBLAS_LIBRARY "${IMSRG_LOCAL_PREFIX}/lib/libgslcblas.so" CACHE FILEPATH "GSL CBLAS library" FORCE)
-endif()
-if(EXISTS "${IMSRG_LOCAL_PREFIX}/include/gsl/gsl_version.h")
-    set(GSL_INCLUDE_DIR "${IMSRG_LOCAL_PREFIX}/include" CACHE PATH "GSL include directory" FORCE)
-endif()
 
 # Determine if imsrg++ is built as a subproject (using add_subdirectory)
 # or if it is the main project.
@@ -50,67 +33,115 @@ endif()
 
 project(imsrg++ VERSION 0.1.0 LANGUAGES CXX)
 
-if(APPLE)
-    set(HOMEBREW_PREFIX "/opt/homebrew")
-    list(PREPEND CMAKE_PREFIX_PATH
-        "${HOMEBREW_PREFIX}/opt/libomp"
-        "${HOMEBREW_PREFIX}/opt/openblas"
-        "${HOMEBREW_PREFIX}/opt/gsl"
-        "${HOMEBREW_PREFIX}/opt/boost"
-        "${HOMEBREW_PREFIX}/opt/zlib"
-    )
-
-    if(EXISTS "${HOMEBREW_PREFIX}/opt/libomp/include/omp.h" AND EXISTS "${HOMEBREW_PREFIX}/opt/libomp/lib/libomp.dylib")
-        set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -I${HOMEBREW_PREFIX}/opt/libomp/include" CACHE STRING "OpenMP CXX flags")
-        set(OpenMP_CXX_LIB_NAMES "omp" CACHE STRING "OpenMP CXX library names")
-        set(OpenMP_omp_LIBRARY "${HOMEBREW_PREFIX}/opt/libomp/lib/libomp.dylib" CACHE FILEPATH "OpenMP libomp library")
+if(NOT IMSRG_PLATFORM_CONFIGURED)
+    if(NOT IMSRG_PLATFORM)
+        if(APPLE)
+            set(IMSRG_PLATFORM "macos" CACHE STRING "Dependency platform preset. Empty means auto-detect; valid values: linux, macos" FORCE)
+        else()
+            set(IMSRG_PLATFORM "linux" CACHE STRING "Dependency platform preset. Empty means auto-detect; valid values: linux, macos" FORCE)
+        endif()
     endif()
-endif()
 
-find_package(OpenMP REQUIRED COMPONENTS CXX)
-if(IMSRG_USE_MPI)
-    find_package(MPI REQUIRED COMPONENTS CXX)
+    if(IMSRG_PLATFORM STREQUAL "macos")
+        set(IMSRG_HOMEBREW_PREFIX "" CACHE PATH "Homebrew prefix for macOS dependencies")
+        if(NOT IMSRG_HOMEBREW_PREFIX)
+            if(EXISTS "/opt/homebrew")
+                set(IMSRG_HOMEBREW_PREFIX "/opt/homebrew" CACHE PATH "Homebrew prefix for macOS dependencies" FORCE)
+            elseif(EXISTS "/usr/local")
+                set(IMSRG_HOMEBREW_PREFIX "/usr/local" CACHE PATH "Homebrew prefix for macOS dependencies" FORCE)
+            endif()
+        endif()
+
+        foreach(IMSRG_BREW_PKG libomp openblas gsl boost zlib)
+            if(EXISTS "${IMSRG_HOMEBREW_PREFIX}/opt/${IMSRG_BREW_PKG}")
+                list(PREPEND CMAKE_PREFIX_PATH "${IMSRG_HOMEBREW_PREFIX}/opt/${IMSRG_BREW_PKG}")
+            endif()
+        endforeach()
+
+        if(EXISTS "${IMSRG_HOMEBREW_PREFIX}/opt/libomp/include/omp.h" AND EXISTS "${IMSRG_HOMEBREW_PREFIX}/opt/libomp/lib/libomp.dylib")
+            set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -I${IMSRG_HOMEBREW_PREFIX}/opt/libomp/include" CACHE STRING "OpenMP CXX flags")
+            set(OpenMP_CXX_LIB_NAMES "omp" CACHE STRING "OpenMP CXX library names")
+            set(OpenMP_omp_LIBRARY "${IMSRG_HOMEBREW_PREFIX}/opt/libomp/lib/libomp.dylib" CACHE FILEPATH "OpenMP libomp library")
+        endif()
+
+        set(BLA_VENDOR OpenBLAS CACHE STRING "BLAS vendor" FORCE)
+    elseif(IMSRG_PLATFORM STREQUAL "linux")
+        set(IMSRG_LOCAL_PREFIX "/tns/xuxinyu/usr" CACHE PATH "Linux dependency prefix")
+        if(EXISTS "${IMSRG_LOCAL_PREFIX}")
+            list(PREPEND CMAKE_PREFIX_PATH "${IMSRG_LOCAL_PREFIX}")
+            list(PREPEND CMAKE_INCLUDE_PATH "${IMSRG_LOCAL_PREFIX}/include")
+            list(PREPEND CMAKE_LIBRARY_PATH "${IMSRG_LOCAL_PREFIX}/lib")
+            include_directories(SYSTEM "${IMSRG_LOCAL_PREFIX}/include")
+            link_directories("${IMSRG_LOCAL_PREFIX}/lib")
+        endif()
+
+        if(EXISTS "${IMSRG_LOCAL_PREFIX}/lib/libgsl.so")
+            set(GSL_LIBRARY "${IMSRG_LOCAL_PREFIX}/lib/libgsl.so" CACHE FILEPATH "GSL library" FORCE)
+        endif()
+        if(EXISTS "${IMSRG_LOCAL_PREFIX}/lib/libgslcblas.so")
+            set(GSL_CBLAS_LIBRARY "${IMSRG_LOCAL_PREFIX}/lib/libgslcblas.so" CACHE FILEPATH "GSL CBLAS library" FORCE)
+        endif()
+        if(EXISTS "${IMSRG_LOCAL_PREFIX}/include/gsl/gsl_version.h")
+            set(GSL_INCLUDE_DIR "${IMSRG_LOCAL_PREFIX}/include" CACHE PATH "GSL include directory" FORCE)
+        endif()
+
+        set(BLA_VENDOR Generic CACHE STRING "BLAS vendor" FORCE)
+    else()
+        message(FATAL_ERROR "Unsupported IMSRG_PLATFORM='${IMSRG_PLATFORM}'. Use linux or macos.")
+    endif()
+
+    message(STATUS "IMSRG dependency platform: ${IMSRG_PLATFORM}")
+
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
+    if(IMSRG_USE_MPI)
+        find_package(MPI REQUIRED COMPONENTS CXX)
+    endif()
+    find_package(BLAS)
+    if(NOT BLAS_FOUND AND IMSRG_PLATFORM STREQUAL "linux")
+        set(BLAS_LIBRARIES
+            "-L${IMSRG_LOCAL_PREFIX}/lib"
+            "-lz"
+            "-lgslcblas"
+            "-lgsl"
+            "-lblas"
+            "-lcblas"
+            "-llapack"
+            CACHE STRING "Linux fallback BLAS/LAPACK link flags" FORCE
+        )
+        set(BLAS_FOUND TRUE)
+        message(STATUS "Using Linux fallback BLAS/LAPACK link flags: ${BLAS_LIBRARIES}")
+    endif()
+    if(NOT BLAS_FOUND)
+        message(FATAL_ERROR "BLAS was not found for IMSRG_PLATFORM='${IMSRG_PLATFORM}'. On macOS, install openblas with Homebrew or set CMAKE_PREFIX_PATH/BLAS_LIBRARIES.")
+    endif()
+    if(NOT TARGET BLAS::BLAS)
+        add_library(BLAS::BLAS INTERFACE IMPORTED)
+        set_target_properties(BLAS::BLAS PROPERTIES INTERFACE_LINK_LIBRARIES "${BLAS_LIBRARIES}")
+    endif()
+
+    find_package(LAPACK)
+    if(NOT LAPACK_FOUND AND IMSRG_PLATFORM STREQUAL "linux")
+        set(LAPACK_LIBRARIES
+            "-L${IMSRG_LOCAL_PREFIX}/lib"
+            "-llapack"
+            CACHE STRING "Linux fallback LAPACK link flags" FORCE
+        )
+        set(LAPACK_FOUND TRUE)
+        message(STATUS "Using Linux fallback LAPACK link flags: ${LAPACK_LIBRARIES}")
+    endif()
+    if(NOT LAPACK_FOUND)
+        message(FATAL_ERROR "LAPACK was not found for IMSRG_PLATFORM='${IMSRG_PLATFORM}'. On macOS, install openblas with Homebrew or set CMAKE_PREFIX_PATH/LAPACK_LIBRARIES.")
+    endif()
+    if(NOT TARGET LAPACK::LAPACK)
+        add_library(LAPACK::LAPACK INTERFACE IMPORTED)
+        set_target_properties(LAPACK::LAPACK PROPERTIES INTERFACE_LINK_LIBRARIES "${LAPACK_LIBRARIES}")
+    endif()
+
+    find_package(GSL REQUIRED)
+    find_package(Boost REQUIRED)
+    find_package(ZLIB REQUIRED)
+    set(IMSRG_PLATFORM_CONFIGURED TRUE CACHE INTERNAL "Platform dependencies have been configured")
 endif()
-find_package(BLAS)
-if(NOT BLAS_FOUND)
-    set(BLAS_LIBRARIES
-        "-L${IMSRG_LOCAL_PREFIX}/lib"
-        "-lz"
-        "-lgslcblas"
-        "-lgsl"
-        "-lblas"
-        "-lcblas"
-        "-llapack"
-        CACHE STRING "Fallback BLAS/LAPACK link flags" FORCE
-    )
-    set(BLAS_FOUND TRUE)
-    message(STATUS "Using fallback BLAS/LAPACK link flags: ${BLAS_LIBRARIES}")
-endif()
-if(NOT TARGET BLAS::BLAS)
-    add_library(BLAS::BLAS INTERFACE IMPORTED)
-    set_target_properties(BLAS::BLAS PROPERTIES
-        INTERFACE_LINK_LIBRARIES "${BLAS_LIBRARIES}"
-    )
-endif()
-find_package(LAPACK)
-if(NOT LAPACK_FOUND)
-    set(LAPACK_LIBRARIES
-        "-L${IMSRG_LOCAL_PREFIX}/lib"
-        "-llapack"
-        CACHE STRING "Fallback LAPACK link flags" FORCE
-    )
-    set(LAPACK_FOUND TRUE)
-    message(STATUS "Using fallback LAPACK link flags: ${LAPACK_LIBRARIES}")
-endif()
-if(NOT TARGET LAPACK::LAPACK)
-    add_library(LAPACK::LAPACK INTERFACE IMPORTED)
-    set_target_properties(LAPACK::LAPACK PROPERTIES
-        INTERFACE_LINK_LIBRARIES "${LAPACK_LIBRARIES}"
-    )
-endif()
-find_package(GSL REQUIRED)
-find_package(Boost REQUIRED)
-find_package(ZLIB REQUIRED)
 # find_package(Armadillo REQUIRED)
 # include_directories(${ARMADILLO_INCLUDE_DIRS})
 

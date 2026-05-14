@@ -178,11 +178,12 @@ Operator &Operator::operator+=(const Operator &rhs)
 {
   int rank_lhs = this->GetParticleRank();
   int rank_rhs = rhs.GetParticleRank();
-  int maxrank = std::max( rank_lhs, rank_rhs );
+  int maxrank = rhs.ThreeBody.IsAllocated() ? std::max( rank_lhs, rank_rhs ) : rank_lhs;
   ZeroBody += rhs.ZeroBody;
   OneBody += rhs.OneBody;
   TwoBody += rhs.TwoBody;
-  ThreeBody += rhs.ThreeBody;
+  if (rhs.ThreeBody.IsAllocated())
+    ThreeBody += rhs.ThreeBody;
   if ( maxrank > rank_lhs ) this->SetParticleRank(maxrank);
 
   if (rhs.GetNumberLegs() % 2 == 1)
@@ -214,11 +215,12 @@ Operator &Operator::operator-=(const Operator &rhs)
 {
   int rank_lhs = this->GetParticleRank();
   int rank_rhs = rhs.GetParticleRank();
-  int maxrank = std::max( rank_lhs, rank_rhs );
+  int maxrank = rhs.ThreeBody.IsAllocated() ? std::max( rank_lhs, rank_rhs ) : rank_lhs;
   ZeroBody -= rhs.ZeroBody;
   OneBody -= rhs.OneBody;
   TwoBody -= rhs.TwoBody;
-  ThreeBody -= rhs.ThreeBody;
+  if (rhs.ThreeBody.IsAllocated())
+    ThreeBody -= rhs.ThreeBody;
   if ( maxrank > rank_lhs ) this->SetParticleRank(maxrank);
   if (rhs.GetNumberLegs() % 2 == 1)
     ThreeLeg -= rhs.ThreeLeg;
@@ -469,9 +471,19 @@ Operator Operator::DoNormalOrderingFilledValence() const
 ///  the tensor part hasn't been tested
 //*************************************************************
 // Operator Operator::DoNormalOrdering2(int sign) const
-Operator Operator::DoNormalOrdering2(int sign, std::set<index_t> occupied) const
+Operator Operator::DoNormalOrdering2(int sign, std::set<index_t> occupied, bool mpi_allreduce) const
 {
-  Operator opNO(*this);
+  Operator opNO(*modelspace, rank_J, rank_T, parity, 2);
+  opNO.ZeroBody = ZeroBody;
+  opNO.OneBody = OneBody;
+  opNO.TwoBody = TwoBody;
+  opNO.hermitian = hermitian;
+  opNO.antihermitian = antihermitian;
+  opNO.is_reduced = is_reduced;
+  opNO.Q_space_orbit = Q_space_orbit;
+  double zero_body_from_two_body = 0.0;
+  arma::mat one_body_from_two_body(modelspace->GetNumberOrbits(), modelspace->GetNumberOrbits(), arma::fill::zeros);
+
   bool scalar = (opNO.rank_J == 0 and opNO.rank_T == 0 and opNO.parity == 0);
   if (scalar)
   {
@@ -491,7 +503,7 @@ Operator Operator::DoNormalOrdering2(int sign, std::set<index_t> occupied) const
           int Jmax = (ok.j2 + ol.j2) / 2;
           for (int J = Jmin; J <= Jmax; J++)
           {
-            opNO.ZeroBody += (2 * J + 1) * ok.occ * ol.occ * TwoBody.GetTBME_J_norm(J, J, k, l, k, l);
+            zero_body_from_two_body += (2 * J + 1) * ok.occ * ol.occ * TwoBody.GetTBME_J_norm(J, J, k, l, k, l);
           }
         }
       }
@@ -535,10 +547,10 @@ Operator Operator::DoNormalOrdering2(int sign, std::set<index_t> occupied) const
             // if (opNO.rank_J == 0)
             if (not opNO.IsReduced())
             {
-              opNO.OneBody(a,b) += hatfactor / (2 * ja + 1.0) * sign * oh.occ * TwoBody.GetTBME(ch_bra, ch_ket, a, h, b, h);
+              one_body_from_two_body(a,b) += hatfactor / (2 * ja + 1.0) * sign * oh.occ * TwoBody.GetTBME(ch_bra, ch_ket, a, h, b, h);
               if ( herm !=0 )
               {
-                opNO.OneBody(b,a) = herm * opNO.OneBody(a,b);
+                one_body_from_two_body(b,a) = herm * one_body_from_two_body(a,b);
               }
             }
             else
@@ -556,9 +568,9 @@ Operator Operator::DoNormalOrdering2(int sign, std::set<index_t> occupied) const
               {
                     ME *=2; // To account for both combinations < ah Jbra||Op|| bh Jket> and <ab Jket||Op|| bh Jbra>.  (Bug found by Antoine Belley, May 2025).
               }
-              opNO.OneBody(a,b) += ME;
+              one_body_from_two_body(a,b) += ME;
               
-              opNO.OneBody(b,a) = herm * modelspace->phase(ja - jb) * opNO.OneBody(a,b);
+              one_body_from_two_body(b,a) = herm * modelspace->phase(ja - jb) * one_body_from_two_body(a,b);
               
             }
           }
@@ -566,6 +578,15 @@ Operator Operator::DoNormalOrdering2(int sign, std::set<index_t> occupied) const
       }
     } // loop over channels
   }
+
+  if (mpi_allreduce && imsrg_mpi::Enabled())
+  {
+    imsrg_mpi::AllreduceInPlace(zero_body_from_two_body);
+    imsrg_mpi::AllreduceInPlace(one_body_from_two_body);
+  }
+
+  opNO.ZeroBody += zero_body_from_two_body;
+  opNO.OneBody += one_body_from_two_body;
 
   return opNO;
 }
@@ -667,8 +688,6 @@ Operator Operator::DoNormalOrdering3(int sign, std::set<index_t> occupied) const
   opNO2.ScaleOneBody(1. / 2.);
   if (imsrg_mpi::Enabled())
   {
-    imsrg_mpi::AllreduceInPlace(opNO2.ZeroBody);
-    imsrg_mpi::AllreduceInPlace(opNO2.OneBody);
     restrict_to_owned_two_body(opNO2);
   }
   std::cout << __func__ << "  contributed " << opNO2.ZeroBody << "  to the zero body part" << std::endl;
@@ -677,7 +696,7 @@ Operator Operator::DoNormalOrdering3(int sign, std::set<index_t> occupied) const
   Operator opNO2_parent = DoNormalOrdering2(sign, occupied);
   restrict_to_owned_two_body(opNO2_parent);
   opNO2 += opNO2_parent;
-  opNO2.ThreeBody.SetMode("pn");
+  opNO2.SetParticleRank(2);
 
   IMSRGProfiler::timer[__func__] += omp_get_wtime() - t_start;
   return opNO2;
