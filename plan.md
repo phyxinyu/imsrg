@@ -25,30 +25,17 @@
 
 ---
 
-## 剩余改进点（按优先级排序）
+## 剩余改进点
 
-### 🔵 优先级 D：性能优化
-
-**1. Pandya prefetch 从阶段级全量改为 key-list**
-
-- 位置：[src/Commutator.cc](src/Commutator.cc)
-- 当前状态：`comm222_phss` 前仍对 `X_work/Y_work` 做阶段内全量合法 matrix prefetch。
-- 目标：只预取 Pandya transformation 实际访问的 `(ch_bra, ch_ket)` key 列表，减少通信量和峰值内存。
-- 注意：逆 Pandya contribution packet 已经实现；这里优化的是 Pandya 正变换/输入读取阶段。
-
-**2. generator denominator 从 matrix-key 级继续压缩**
-
-- 位置：[src/Generator.cc](src/Generator.cc)
-- 当前状态：`GetDenominatorMatrixKeys` 已实现 matrix-key-list prefetch，不再是阶段级全量 prefetch。
-- 目标：进一步压缩到 element/value 级 denominator cache，或重写为 owner-local contribution 公式，继续降低 generator 阶段峰值内存。
-- 注意：必须保持 `np=1` 与 `np=2/4` 的 `Eta`、flow status 和最终 TBME 数值一致。
+- 给 MPI 通信路径补独立 profiler timer，覆盖 prefetch、clear cache、Bcast、Alltoallv、Allreduce 和 Gather，避免通信开销继续隐藏在上层 timer 中。
+- 优先优化 `comm222_phss` 前的 `X_work` / `Y_work` TwoBody prefetch，避免默认全量 matrix-key 广播；当前日志显示 `comm222_phss` 自身没有变快，但 `CommutatorScalarScalar` 和 `system time` 明显增加。
+- 评估将 prefetch 的 owner-to-all `MPI_Bcast(MPI_COMM_WORLD)` 改为 owner-to-requesters 通信；当前全体广播实现简单、collective 顺序稳定，但只要任意 rank 需要某个矩阵，所有 rank 都会接收和分配该矩阵，稀疏需求下通信和内存浪费明显。
+- 优化 inverse Pandya 的 `Alltoallv` contribution packet，减少包大小和包数量；可评估整数索引与 double 数据分离传输，以及发送前合并相同 `(ch, ibra, iket)` 贡献。
+- 合并小规模 `ZeroBody` / `OneBody` Allreduce，减少 scalar commutator 和 generator update 中的 collective 次数。
+- 优化 generator denominator prefetch 的 key 生成和复用，避免重复构造相同 matrix-key list。
+- 低优先级评估最终 `GatherOperatorToRoot`；它只在输出阶段发生，除非输出阶段成为瓶颈，否则不作为第一批性能优化。
 
 ---
-
-## 建议实施顺序
-
-1. **D1**：Pandya key-list prefetch。它仍是当前最大的阶段性内存/通信优化点。
-2. **D2**：generator denominator element/value 级压缩。需要额外数值对比，建议单独立项。
 
 ## 验证方式
 

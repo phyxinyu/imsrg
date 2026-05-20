@@ -5,6 +5,7 @@
 #include "MpiSupport.hh"
 
 #include "AngMom.hh"
+#include "IMSRGProfiler.hh"
 #include "ModelSpace.hh"
 #include "Operator.hh"
 #include "TwoBodyME.hh"
@@ -22,6 +23,8 @@
 #ifdef IMSRG_USE_MPI
 #include <mpi.h>
 #endif
+
+#include <omp.h>
 
 namespace
 {
@@ -302,16 +305,21 @@ namespace imsrg_mpi
 
   void AllreduceInPlace(double& value)
   {
+    double t_start = omp_get_wtime();
 #ifdef IMSRG_USE_MPI
     if (Enabled())
       MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 #else
     (void)value;
 #endif
+    double elapsed = omp_get_wtime() - t_start;
+    IMSRGProfiler::timer["MPI_Allreduce"] += elapsed;
+    IMSRGProfiler::timer["MPI_AllreduceScalar"] += elapsed;
   }
 
   void AllreduceInPlace(arma::mat& matrix)
   {
+    double t_start = omp_get_wtime();
 #ifdef IMSRG_USE_MPI
     if (Enabled() && matrix.n_elem > 0)
     {
@@ -322,10 +330,14 @@ namespace imsrg_mpi
 #else
     (void)matrix;
 #endif
+    double elapsed = omp_get_wtime() - t_start;
+    IMSRGProfiler::timer["MPI_Allreduce"] += elapsed;
+    IMSRGProfiler::timer["MPI_AllreduceMatrix"] += elapsed;
   }
 
   void BroadcastMatrixFromRank(arma::mat& matrix, int root)
   {
+    double t_start = omp_get_wtime();
 #ifdef IMSRG_USE_MPI
     if (Enabled() && matrix.n_elem > 0)
     {
@@ -337,48 +349,99 @@ namespace imsrg_mpi
     (void)matrix;
     (void)root;
 #endif
+    IMSRGProfiler::timer["MPI_BcastTwoBodyMatrices"] += omp_get_wtime() - t_start;
+  }
+
+  void TransferMatrixFromOwnerToRequesters(arma::mat& matrix, int owner, const std::vector<int>& requesters)
+  {
+    double t_start = omp_get_wtime();
+#ifdef IMSRG_USE_MPI
+    if (Enabled() && matrix.n_elem > 0 && !requesters.empty())
+    {
+      const int tag = 39217;
+      const int rank = Rank();
+      const bool rank_requests_matrix = std::binary_search(requesters.begin(), requesters.end(), rank);
+      if (rank == owner || rank_requests_matrix)
+      {
+        ForEachMatrixChunk(matrix, [&](double* data, int count) {
+          if (rank == owner)
+          {
+            std::vector<MPI_Request> requests;
+            requests.reserve(requesters.size());
+            for (int requester : requesters)
+            {
+              if (requester == owner)
+                continue;
+              MPI_Request request;
+              MPI_Isend(data, count, MPI_DOUBLE, requester, tag, MPI_COMM_WORLD, &request);
+              requests.push_back(request);
+            }
+            if (!requests.empty())
+              MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
+          }
+          else
+          {
+            MPI_Recv(data, count, MPI_DOUBLE, owner, tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+          }
+        });
+      }
+    }
+#else
+    (void)matrix;
+    (void)owner;
+    (void)requesters;
+#endif
+    double elapsed = omp_get_wtime() - t_start;
+    IMSRGProfiler::timer["MPI_BcastTwoBodyMatrices"] += elapsed;
+    IMSRGProfiler::timer["MPI_RequesterTransferTwoBodyMatrices"] += elapsed;
   }
 
   std::vector<double> AlltoallvDoubles(const std::vector<std::vector<double>>& send_buffers)
   {
+    double t_start = omp_get_wtime();
     std::vector<double> received;
 #ifdef IMSRG_USE_MPI
     if (!Enabled())
-      return send_buffers.empty() ? received : send_buffers.front();
-
-    int nranks = Size();
-    std::vector<int> send_counts(nranks, 0);
-    std::vector<int> recv_counts(nranks, 0);
-    for (int rank = 0; rank < nranks; ++rank)
     {
-      if (rank < static_cast<int>(send_buffers.size()))
-        send_counts[rank] = static_cast<int>(send_buffers[rank].size());
+      received = send_buffers.empty() ? received : send_buffers.front();
     }
-
-    MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
-
-    std::vector<int> send_displs(nranks, 0);
-    std::vector<int> recv_displs(nranks, 0);
-    for (int rank = 1; rank < nranks; ++rank)
+    else
     {
-      send_displs[rank] = send_displs[rank - 1] + send_counts[rank - 1];
-      recv_displs[rank] = recv_displs[rank - 1] + recv_counts[rank - 1];
-    }
+      int nranks = Size();
+      std::vector<int> send_counts(nranks, 0);
+      std::vector<int> recv_counts(nranks, 0);
+      for (int rank = 0; rank < nranks; ++rank)
+      {
+        if (rank < static_cast<int>(send_buffers.size()))
+          send_counts[rank] = static_cast<int>(send_buffers[rank].size());
+      }
 
-    std::vector<double> send_flat(send_displs.back() + send_counts.back());
-    for (int rank = 0; rank < nranks; ++rank)
-    {
-      if (rank < static_cast<int>(send_buffers.size()) && !send_buffers[rank].empty())
-        std::copy(send_buffers[rank].begin(), send_buffers[rank].end(), send_flat.begin() + send_displs[rank]);
-    }
+      MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
 
-    received.resize(recv_displs.back() + recv_counts.back());
-    MPI_Alltoallv(send_flat.data(), send_counts.data(), send_displs.data(), MPI_DOUBLE,
-                  received.data(), recv_counts.data(), recv_displs.data(), MPI_DOUBLE,
-                  MPI_COMM_WORLD);
+      std::vector<int> send_displs(nranks, 0);
+      std::vector<int> recv_displs(nranks, 0);
+      for (int rank = 1; rank < nranks; ++rank)
+      {
+        send_displs[rank] = send_displs[rank - 1] + send_counts[rank - 1];
+        recv_displs[rank] = recv_displs[rank - 1] + recv_counts[rank - 1];
+      }
+
+      std::vector<double> send_flat(send_displs.back() + send_counts.back());
+      for (int rank = 0; rank < nranks; ++rank)
+      {
+        if (rank < static_cast<int>(send_buffers.size()) && !send_buffers[rank].empty())
+          std::copy(send_buffers[rank].begin(), send_buffers[rank].end(), send_flat.begin() + send_displs[rank]);
+      }
+
+      received.resize(recv_displs.back() + recv_counts.back());
+      MPI_Alltoallv(send_flat.data(), send_counts.data(), send_displs.data(), MPI_DOUBLE,
+                    received.data(), recv_counts.data(), recv_displs.data(), MPI_DOUBLE,
+                    MPI_COMM_WORLD);
+    }
 #else
     received = send_buffers.empty() ? std::vector<double>() : send_buffers.front();
 #endif
+    IMSRGProfiler::timer["MPI_AlltoallvDoubles"] += omp_get_wtime() - t_start;
     return received;
   }
 
@@ -421,8 +484,12 @@ namespace imsrg_mpi
 
   void PrefetchTwoBodyMatrices(Operator& op, const std::vector<std::array<std::size_t, 2>>& requested_keys)
   {
+    double t_start = omp_get_wtime();
     if (!OwnerOnlyStorageEnabled() || !op.TwoBody.IsAllocated())
+    {
+      IMSRGProfiler::timer["MPI_PrefetchTwoBodyMatrices"] += omp_get_wtime() - t_start;
       return;
+    }
 
     ModelSpace& modelspace = *op.GetModelSpace();
     EnsureChannelOwnership(modelspace);
@@ -442,21 +509,46 @@ namespace imsrg_mpi
         needed[i] = 1;
     }
 
+    int nranks = Size();
+    std::vector<int> needed_by_rank(needed.size() * static_cast<std::size_t>(nranks), 0);
 #ifdef IMSRG_USE_MPI
     if (Enabled() && !needed.empty())
-      MPI_Allreduce(MPI_IN_PLACE, needed.data(), static_cast<int>(needed.size()), MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    {
+      double t_allgather = omp_get_wtime();
+      MPI_Allgather(needed.data(), static_cast<int>(needed.size()), MPI_INT,
+                    needed_by_rank.data(), static_cast<int>(needed.size()), MPI_INT,
+                    MPI_COMM_WORLD);
+      IMSRGProfiler::timer["MPI_PrefetchNeededAllgather"] += omp_get_wtime() - t_allgather;
+    }
+    else
 #endif
+    {
+      std::copy(needed.begin(), needed.end(), needed_by_rank.begin());
+    }
 
     for (std::size_t ikey = 0; ikey < legal_keys.size(); ++ikey)
     {
-      if (!needed[ikey])
+      std::vector<int> requesters;
+      requesters.reserve(nranks);
+      for (int rank = 0; rank < nranks; ++rank)
+      {
+        if (needed_by_rank[static_cast<std::size_t>(rank) * legal_keys.size() + ikey])
+          requesters.push_back(rank);
+      }
+      if (requesters.empty())
         continue;
+
       const auto& key = legal_keys[ikey];
       std::size_t ch_bra = key[0];
       std::size_t ch_ket = key[1];
       TwoBodyChannel& tbc_bra = modelspace.GetTwoBodyChannel(ch_bra);
       TwoBodyChannel& tbc_ket = modelspace.GetTwoBodyChannel(ch_ket);
       int owner = TwoBodyChannelOwner(modelspace, ch_bra);
+      bool rank_needs_matrix = needed[ikey] != 0;
+      bool rank_sends_matrix = Rank() == owner;
+
+      if (!rank_needs_matrix && !rank_sends_matrix)
+        continue;
 
       auto it = op.TwoBody.MatEl.find(key);
       if (it == op.TwoBody.MatEl.end())
@@ -464,23 +556,31 @@ namespace imsrg_mpi
         it = op.TwoBody.MatEl.emplace(
           key, arma::mat(tbc_bra.GetNumberKets(), tbc_ket.GetNumberKets(), arma::fill::zeros)).first;
       }
-      BroadcastMatrixFromRank(it->second, owner);
+      TransferMatrixFromOwnerToRequesters(it->second, owner, requesters);
     }
+    IMSRGProfiler::timer["MPI_PrefetchTwoBodyMatrices"] += omp_get_wtime() - t_start;
   }
 
   void ClearTwoBodyCache(Operator& op)
   {
+    double t_start = omp_get_wtime();
     // Remove temporary prefetched non-owner matrices; owned resident storage remains.
     RestrictOperatorToOwnedChannels(op);
+    IMSRGProfiler::timer["MPI_ClearTwoBodyCache"] += omp_get_wtime() - t_start;
   }
 
   void GatherOperatorToRoot(Operator& op)
   {
+    double t_start = omp_get_wtime();
     if (!OwnerOnlyStorageEnabled() || !op.TwoBody.IsAllocated())
+    {
+      IMSRGProfiler::timer["MPI_GatherOperatorToRoot"] += omp_get_wtime() - t_start;
       return;
+    }
     PrefetchTwoBodyMatrices(op);
     if (!IsRoot())
       ClearTwoBodyCache(op);
+    IMSRGProfiler::timer["MPI_GatherOperatorToRoot"] += omp_get_wtime() - t_start;
   }
 
   double TwoBodyNorm(const TwoBodyME& two_body)

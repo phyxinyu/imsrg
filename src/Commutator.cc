@@ -34,6 +34,8 @@ namespace Commutator
   bool single_thread = false;
   bool verbose = false;
 
+  std::vector<std::array<std::size_t, 2>> GetPandyaPrefetchKeys(const Operator& X, const Operator& Y, const Operator& Z);
+
   std::map<std::string, bool> comm_term_on = {
       {"comm110ss", true},
       {"comm220ss", true},
@@ -397,8 +399,9 @@ namespace Commutator
     //      comm222_pp_hh_221ss(X, Y, Z);
     if (comm_term_on["comm222_phss"])
     {
-      imsrg_mpi::PrefetchTwoBodyMatrices(X_work);
-      imsrg_mpi::PrefetchTwoBodyMatrices(Y_work);
+      std::vector<std::array<std::size_t, 2>> pandya_keys = GetPandyaPrefetchKeys(X_work, Y_work, Z);
+      imsrg_mpi::PrefetchTwoBodyMatrices(X_work, pandya_keys);
+      imsrg_mpi::PrefetchTwoBodyMatrices(Y_work, pandya_keys);
       comm222_phss(X_work, Y_work, Z);
       imsrg_mpi::ClearTwoBodyCache(X_work);
       imsrg_mpi::ClearTwoBodyCache(Y_work);
@@ -1695,6 +1698,109 @@ namespace Commutator
         } // for iket_cc
       } // for ab_case
     } // for ibra
+  }
+
+  void AddPandyaReadKey(const Operator& op, std::vector<std::array<std::size_t, 2>>& keys,
+                        int j_bra, int j_ket, int a, int b, int c, int d)
+  {
+    Orbit& oa = op.modelspace->GetOrbit(a);
+    Orbit& ob = op.modelspace->GetOrbit(b);
+    Orbit& oc = op.modelspace->GetOrbit(c);
+    Orbit& od = op.modelspace->GetOrbit(d);
+    int parity_bra = (oa.l + ob.l) % 2;
+    int parity_ket = (oc.l + od.l) % 2;
+    int Tz_bra = (oa.tz2 + ob.tz2) / 2;
+    int Tz_ket = (oc.tz2 + od.tz2) / 2;
+
+    if ((op.GetParity() + parity_bra + parity_ket) % 2 > 0)
+      return;
+    if (std::abs(Tz_bra - Tz_ket) != op.GetTRank())
+      return;
+    if (!AngMom::Triangle(j_bra, j_ket, op.GetJRank()))
+      return;
+
+    std::size_t ch_bra = op.modelspace->GetTwoBodyChannelIndex(j_bra, parity_bra, Tz_bra);
+    std::size_t ch_ket = op.modelspace->GetTwoBodyChannelIndex(j_ket, parity_ket, Tz_ket);
+    if (ch_bra > ch_ket)
+      std::swap(ch_bra, ch_ket);
+    keys.push_back({ch_bra, ch_ket});
+  }
+
+  std::vector<std::array<std::size_t, 2>> GetPandyaPrefetchKeys(const Operator& X, const Operator& Y, const Operator& Z)
+  {
+    std::vector<std::array<std::size_t, 2>> keys;
+    if (!imsrg_mpi::OwnerOnlyStorageEnabled())
+      return keys;
+
+    size_t nch = Z.modelspace->GetNumberTwoBodyChannels_CC();
+    for (size_t ch = 0; ch < nch; ++ch)
+    {
+      if (!imsrg_mpi::OwnsCrossCoupledChannel(*Z.modelspace, ch))
+        continue;
+
+      TwoBodyChannel_CC& tbc_cc = X.modelspace->GetTwoBodyChannel_CC(ch);
+      int nKets_cc = tbc_cc.GetNumberKets();
+      arma::uvec kets_ph = arma::join_cols(tbc_cc.GetKetIndex_hh(), tbc_cc.GetKetIndex_ph());
+      int nph_kets = kets_ph.n_rows;
+      int J_cc = tbc_cc.J;
+
+      for (int ibra = 0; ibra < nph_kets; ++ibra)
+      {
+        Ket& bra_cc = tbc_cc.GetKet(kets_ph[ibra]);
+        std::vector<size_t> ab_switcheroo = {bra_cc.p, bra_cc.q};
+        for (int ab_case = 0; ab_case <= 1; ab_case++)
+        {
+          int a = ab_switcheroo[ab_case];
+          int b = ab_switcheroo[1 - ab_case];
+
+          Orbit& oa = X.modelspace->GetOrbit(a);
+          Orbit& ob = X.modelspace->GetOrbit(b);
+          int jjai = oa.j2;
+          int jjbi = ob.j2;
+          double ja = oa.j2 * 0.5;
+          double jb = ob.j2 * 0.5;
+
+          for (int iket_cc = 0; iket_cc < nKets_cc; ++iket_cc)
+          {
+            Ket& ket_cc = tbc_cc.GetKet(iket_cc % nKets_cc);
+            int c = iket_cc < nKets_cc ? ket_cc.p : ket_cc.q;
+            int d = iket_cc < nKets_cc ? ket_cc.q : ket_cc.p;
+
+            Orbit& oc = X.modelspace->GetOrbit(c);
+            Orbit& od = X.modelspace->GetOrbit(d);
+            if ((std::abs(oa.tz2 + od.tz2 - ob.tz2 - oc.tz2) != 2 * X.GetTRank()) &&
+                (std::abs(oa.tz2 + od.tz2 - ob.tz2 - oc.tz2) != 2 * Y.GetTRank()))
+              continue;
+
+            int jjci = oc.j2;
+            int jjdi = od.j2;
+            double jc = oc.j2 * 0.5;
+            double jd = od.j2 * 0.5;
+
+            int jmin = std::max(std::abs(ja - jd), std::abs(jc - jb));
+            int jmax = std::min(ja + jd, jc + jb);
+            int dJ_std = 1;
+            if (a == d or c == b)
+            {
+              dJ_std = 2;
+              jmin += jmin % 2;
+            }
+            for (int J_std = jmin; J_std <= jmax; J_std += dJ_std)
+            {
+              double sixj = X.modelspace->GetCachedSixJ(jjai, jjbi, J_cc, jjci, jjdi, J_std);
+              if (std::abs(sixj) < 1e-8)
+                continue;
+              AddPandyaReadKey(X, keys, J_std, J_std, c, b, a, d);
+              AddPandyaReadKey(Y, keys, J_std, J_std, c, b, a, d);
+            }
+          }
+        }
+      }
+    }
+
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
   }
 
   void DoPandyaTransformation(const Operator &Z, std::deque<arma::mat> &TwoBody_CC_ph, std::string orientation = "normal")
