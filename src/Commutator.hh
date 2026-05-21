@@ -33,6 +33,7 @@
 #include <deque>
 #include <array>
 #include <string>
+#include <vector>
 
 namespace Commutator
 {
@@ -63,7 +64,7 @@ namespace Commutator
     void DoPandyaTransformation(const Operator &Z, std::deque<arma::mat> &, std::string orientation);
     void DoPandyaTransformation_SingleChannel(const Operator &Z, arma::mat &X, int ch_cc, std::string orientation);
     void DoPandyaTransformation_SingleChannel_XandY(const Operator &X, const Operator &Y, arma::mat &X2_CC_ph, arma::mat &Y2_CC_ph, int ch_cc);
-    void AddInversePandyaTransformation(const std::deque<arma::mat> &Zbar, Operator &Z); // Changed from the above declaration. Not sure how this was compiling...
+    void AddInversePandyaTransformation(const std::deque<arma::mat> &Zbar, Operator &Z, const std::vector<char>* active_cc = nullptr); // Changed from the above declaration. Not sure how this was compiling...
     void AddInversePandyaTransformation_SingleChannel(Operator &Z, arma::mat &Zbar, int ch_cc);
 
     void comm110ss(const Operator &X, const Operator &Y, Operator &Z);

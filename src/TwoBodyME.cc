@@ -118,6 +118,7 @@ void TwoBodyME::Allocate()
 {
   nChannels = modelspace->GetNumberTwoBodyChannels();
   MatEl.clear();
+  SparseMatEl.clear();
   for (size_t ch_bra=0; ch_bra<nChannels;++ch_bra)
   {
      TwoBodyChannel& tbc_bra = modelspace->GetTwoBodyChannel(ch_bra);
@@ -141,6 +142,7 @@ void TwoBodyME::Allocate()
 void TwoBodyME::Deallocate()
 {
   MatEl.clear();
+  SparseMatEl.clear();
 }
 
 void TwoBodyME::SetHermitian()
@@ -175,6 +177,33 @@ bool TwoBodyME::HasMatrix(size_t chbra, size_t chket) const
 bool TwoBodyME::HasMatrix(std::array<size_t,2> a) const
 {
    return HasMatrix(a[0], a[1]);
+}
+
+bool TwoBodyME::TryGetStoredElement(size_t chbra, size_t chket, size_t ibra, size_t iket, double& value) const
+{
+   auto itmat = MatEl.find({chbra, chket});
+   if (itmat != MatEl.end())
+   {
+      value = itmat->second(ibra, iket);
+      return true;
+   }
+
+   auto it = SparseMatEl.find({chbra, chket, ibra, iket});
+   if (it == SparseMatEl.end())
+      return false;
+
+   value = it->second;
+   return true;
+}
+
+void TwoBodyME::SetSparseElement(size_t chbra, size_t chket, size_t ibra, size_t iket, double value)
+{
+   SparseMatEl[{chbra, chket, ibra, iket}] = value;
+}
+
+void TwoBodyME::ClearSparseElements()
+{
+   SparseMatEl.clear();
 }
 
 arma::mat& TwoBodyME::GetMatrix(size_t chbra, size_t chket)
@@ -252,14 +281,22 @@ double TwoBodyME::GetTBME_norm(int ch_bra, int ch_ket, int a, int b, int c, int 
    if (c>d) phase *= ket.Phase(tbc_ket.J);
    if (ch_bra > ch_ket)
    {
-     if (imsrg_mpi::OwnerOnlyStorageEnabled() and not HasMatrix(ch_ket, ch_bra))
+     double raw_value = 0;
+     bool have_value = TryGetStoredElement(ch_ket, ch_bra, ket_ind, bra_ind, raw_value);
+     if (imsrg_mpi::OwnerOnlyStorageEnabled() and not have_value)
        return 0;
-     return hermitian ?   phase * modelspace->phase(tbc_bra.J-tbc_ket.J) * GetMatrix(ch_ket,ch_bra)(ket_ind,bra_ind)
-                      : - phase * modelspace->phase(tbc_bra.J-tbc_ket.J) * GetMatrix(ch_ket,ch_bra)(ket_ind,bra_ind);
+     if (not have_value)
+       raw_value = GetMatrix(ch_ket,ch_bra)(ket_ind,bra_ind);
+     return hermitian ?   phase * modelspace->phase(tbc_bra.J-tbc_ket.J) * raw_value
+                      : - phase * modelspace->phase(tbc_bra.J-tbc_ket.J) * raw_value;
    }
-   if (imsrg_mpi::OwnerOnlyStorageEnabled() and not HasMatrix(ch_bra, ch_ket))
+   double raw_value = 0;
+   bool have_value = TryGetStoredElement(ch_bra, ch_ket, bra_ind, ket_ind, raw_value);
+   if (imsrg_mpi::OwnerOnlyStorageEnabled() and not have_value)
      return 0;
-   return phase * GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);
+   if (not have_value)
+     raw_value = GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);
+   return phase * raw_value;
 }
 
 void TwoBodyME::SetTBME(int ch_bra, int ch_ket, int a, int b, int c, int d, double tbme)
@@ -547,14 +584,22 @@ void TwoBodyME::GetTBME_J_norm_twoOps(const TwoBodyME& OtherTBME, int j_bra, int
      std::swap(ch_bra,ch_ket);
      std::swap(bra_ind,ket_ind);
    }
-   if (imsrg_mpi::OwnerOnlyStorageEnabled() and not HasMatrix(ch_bra, ch_ket))
+   double raw_this = 0;
+   double raw_other = 0;
+   bool have_this = TryGetStoredElement(ch_bra, ch_ket, bra_ind, ket_ind, raw_this);
+   bool have_other = OtherTBME.TryGetStoredElement(ch_bra, ch_ket, bra_ind, ket_ind, raw_other);
+   if (imsrg_mpi::OwnerOnlyStorageEnabled())
    {
-     tbme_this = 0;
-     tbme_other = 0;
+     tbme_this = have_this ? phase * raw_this : 0;
+     tbme_other = have_other ? phase * raw_other : 0;
      return;
    }
-   tbme_this =  phase * GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);
-   tbme_other =  phase * OtherTBME.GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);
+   if (not have_this)
+     raw_this = GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);
+   if (not have_other)
+     raw_other = OtherTBME.GetMatrix(ch_bra,ch_ket)(bra_ind, ket_ind);
+   tbme_this =  phase * raw_this;
+   tbme_other =  phase * raw_other;
 }
 
 

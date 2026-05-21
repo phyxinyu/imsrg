@@ -13,11 +13,13 @@
 #include <map>
 #include <deque>
 #include <array>
+#include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <tuple>
 #include <iostream>
 #include <iomanip>
 
@@ -35,6 +37,8 @@ namespace Commutator
   bool verbose = false;
 
   std::vector<std::array<std::size_t, 2>> GetPandyaPrefetchKeys(const Operator& X, const Operator& Y, const Operator& Z);
+  std::vector<imsrg_mpi::TwoBodyElementRequest> GetPandyaElementRequestsForChannel(const Operator& X, const Operator& Y, const Operator& Z, std::size_t ch);
+  void comm222_phss_rank_local_batches(Operator& X, Operator& Y, Operator& Z);
 
   std::map<std::string, bool> comm_term_on = {
       {"comm110ss", true},
@@ -399,12 +403,10 @@ namespace Commutator
     //      comm222_pp_hh_221ss(X, Y, Z);
     if (comm_term_on["comm222_phss"])
     {
-      std::vector<std::array<std::size_t, 2>> pandya_keys = GetPandyaPrefetchKeys(X_work, Y_work, Z);
-      imsrg_mpi::PrefetchTwoBodyMatrices(X_work, pandya_keys);
-      imsrg_mpi::PrefetchTwoBodyMatrices(Y_work, pandya_keys);
-      comm222_phss(X_work, Y_work, Z);
-      imsrg_mpi::ClearTwoBodyCache(X_work);
-      imsrg_mpi::ClearTwoBodyCache(Y_work);
+      if (imsrg_mpi::OwnerOnlyStorageEnabled())
+        comm222_phss_rank_local_batches(X_work, Y_work, Z);
+      else
+        comm222_phss(X_work, Y_work, Z);
     }
 
 
@@ -1726,6 +1728,44 @@ namespace Commutator
     keys.push_back({ch_bra, ch_ket});
   }
 
+  void AddPandyaReadElement(const Operator& op, std::vector<imsrg_mpi::TwoBodyElementRequest>& requests,
+                            int j_bra, int j_ket, int a, int b, int c, int d)
+  {
+    Orbit& oa = op.modelspace->GetOrbit(a);
+    Orbit& ob = op.modelspace->GetOrbit(b);
+    Orbit& oc = op.modelspace->GetOrbit(c);
+    Orbit& od = op.modelspace->GetOrbit(d);
+    int parity_bra = (oa.l + ob.l) % 2;
+    int parity_ket = (oc.l + od.l) % 2;
+    int Tz_bra = (oa.tz2 + ob.tz2) / 2;
+    int Tz_ket = (oc.tz2 + od.tz2) / 2;
+
+    if ((op.GetParity() + parity_bra + parity_ket) % 2 > 0)
+      return;
+    if (std::abs(Tz_bra - Tz_ket) != op.GetTRank())
+      return;
+    if (!AngMom::Triangle(j_bra, j_ket, op.GetJRank()))
+      return;
+
+    std::size_t ch_bra = op.modelspace->GetTwoBodyChannelIndex(j_bra, parity_bra, Tz_bra);
+    std::size_t ch_ket = op.modelspace->GetTwoBodyChannelIndex(j_ket, parity_ket, Tz_ket);
+
+    TwoBodyChannel& tbc_bra = op.modelspace->GetTwoBodyChannel(ch_bra);
+    TwoBodyChannel& tbc_ket = op.modelspace->GetTwoBodyChannel(ch_ket);
+    int bra_ind = tbc_bra.GetLocalIndex(std::min(a, b), std::max(a, b));
+    int ket_ind = tbc_ket.GetLocalIndex(std::min(c, d), std::max(c, d));
+    if (bra_ind < 0 || ket_ind < 0 ||
+        bra_ind >= tbc_bra.GetNumberKets() || ket_ind >= tbc_ket.GetNumberKets())
+      return;
+
+    if (ch_bra > ch_ket)
+    {
+      std::swap(ch_bra, ch_ket);
+      std::swap(bra_ind, ket_ind);
+    }
+    requests.push_back({ch_bra, ch_ket, static_cast<std::size_t>(bra_ind), static_cast<std::size_t>(ket_ind)});
+  }
+
   std::vector<std::array<std::size_t, 2>> GetPandyaPrefetchKeys(const Operator& X, const Operator& Y, const Operator& Z)
   {
     std::vector<std::array<std::size_t, 2>> keys;
@@ -1803,6 +1843,86 @@ namespace Commutator
     return keys;
   }
 
+  std::vector<imsrg_mpi::TwoBodyElementRequest> GetPandyaElementRequestsForChannel(const Operator& X, const Operator& Y, const Operator& Z, std::size_t ch)
+  {
+    std::vector<imsrg_mpi::TwoBodyElementRequest> requests;
+    if (!imsrg_mpi::OwnerOnlyStorageEnabled())
+      return requests;
+
+    TwoBodyChannel_CC& tbc_cc = X.modelspace->GetTwoBodyChannel_CC(ch);
+    int nKets_cc = tbc_cc.GetNumberKets();
+    arma::uvec kets_ph = arma::join_cols(tbc_cc.GetKetIndex_hh(), tbc_cc.GetKetIndex_ph());
+    int nph_kets = kets_ph.n_rows;
+    int J_cc = tbc_cc.J;
+
+    for (int ibra = 0; ibra < nph_kets; ++ibra)
+    {
+      Ket& bra_cc = tbc_cc.GetKet(kets_ph[ibra]);
+      std::vector<size_t> ab_switcheroo = {bra_cc.p, bra_cc.q};
+      for (int ab_case = 0; ab_case <= 1; ab_case++)
+      {
+        int a = ab_switcheroo[ab_case];
+        int b = ab_switcheroo[1 - ab_case];
+
+        Orbit& oa = X.modelspace->GetOrbit(a);
+        Orbit& ob = X.modelspace->GetOrbit(b);
+        int jjai = oa.j2;
+        int jjbi = ob.j2;
+        double ja = oa.j2 * 0.5;
+        double jb = ob.j2 * 0.5;
+
+        for (int iket_cc = 0; iket_cc < nKets_cc; ++iket_cc)
+        {
+          Ket& ket_cc = tbc_cc.GetKet(iket_cc % nKets_cc);
+          int c = iket_cc < nKets_cc ? ket_cc.p : ket_cc.q;
+          int d = iket_cc < nKets_cc ? ket_cc.q : ket_cc.p;
+
+          Orbit& oc = X.modelspace->GetOrbit(c);
+          Orbit& od = X.modelspace->GetOrbit(d);
+          if ((std::abs(oa.tz2 + od.tz2 - ob.tz2 - oc.tz2) != 2 * X.GetTRank()) &&
+              (std::abs(oa.tz2 + od.tz2 - ob.tz2 - oc.tz2) != 2 * Y.GetTRank()))
+            continue;
+
+          int jjci = oc.j2;
+          int jjdi = od.j2;
+          double jc = oc.j2 * 0.5;
+          double jd = od.j2 * 0.5;
+
+          int jmin = std::max(std::abs(ja - jd), std::abs(jc - jb));
+          int jmax = std::min(ja + jd, jc + jb);
+          int dJ_std = 1;
+          if (a == d or c == b)
+          {
+            dJ_std = 2;
+            jmin += jmin % 2;
+          }
+          for (int J_std = jmin; J_std <= jmax; J_std += dJ_std)
+          {
+            double sixj = X.modelspace->GetCachedSixJ(jjai, jjbi, J_cc, jjci, jjdi, J_std);
+            if (std::abs(sixj) < 1e-8)
+              continue;
+            AddPandyaReadElement(X, requests, J_std, J_std, c, b, a, d);
+            AddPandyaReadElement(Y, requests, J_std, J_std, c, b, a, d);
+          }
+        }
+      }
+    }
+
+    auto request_less = [](const imsrg_mpi::TwoBodyElementRequest& lhs,
+                           const imsrg_mpi::TwoBodyElementRequest& rhs) {
+      return std::tie(lhs.ch_bra, lhs.ch_ket, lhs.bra_ind, lhs.ket_ind) <
+             std::tie(rhs.ch_bra, rhs.ch_ket, rhs.bra_ind, rhs.ket_ind);
+    };
+    auto request_equal = [](const imsrg_mpi::TwoBodyElementRequest& lhs,
+                            const imsrg_mpi::TwoBodyElementRequest& rhs) {
+      return lhs.ch_bra == rhs.ch_bra && lhs.ch_ket == rhs.ch_ket &&
+             lhs.bra_ind == rhs.bra_ind && lhs.ket_ind == rhs.ket_ind;
+    };
+    std::sort(requests.begin(), requests.end(), request_less);
+    requests.erase(std::unique(requests.begin(), requests.end(), request_equal), requests.end());
+    return requests;
+  }
+
   void DoPandyaTransformation(const Operator &Z, std::deque<arma::mat> &TwoBody_CC_ph, std::string orientation = "normal")
   { 
     // loop over cross-coupled channels
@@ -1817,7 +1937,7 @@ namespace Commutator
 
   // Take Zbar, and perform a Pandya transform on it and put the result in Z (technically there's a minus sign
   // missing in what is done here, but that's on purpose).
-  void AddInversePandyaTransformation(const std::deque<arma::mat> &Zbar, Operator &Z)
+  void AddInversePandyaTransformation(const std::deque<arma::mat> &Zbar, Operator &Z, const std::vector<char>* active_cc)
   {
     // Do the inverse Pandya transform
     int nch = Z.modelspace->GetNumberTwoBodyChannels();
@@ -1825,6 +1945,12 @@ namespace Commutator
 
     if (imsrg_mpi::OwnerOnlyStorageEnabled())
     {
+      if (active_cc != nullptr && std::find(active_cc->begin(), active_cc->end(), 1) == active_cc->end())
+      {
+        imsrg_mpi::AlltoallvDoubles(std::vector<std::vector<double>>(imsrg_mpi::Size()));
+        return;
+      }
+
       std::vector<int> ch_vec;
       std::vector<int> ibra_vec;
       for (int ch = 0; ch < nch; ++ch)
@@ -1890,6 +2016,8 @@ namespace Commutator
             if (std::abs(sixj) < 1e-8)
               continue;
             int ch_cc = Z.modelspace->GetTwoBodyChannelIndex(Jprime, parity_cc, Tz_cc);
+            if (active_cc != nullptr && (ch_cc >= static_cast<int>(active_cc->size()) || !(*active_cc)[ch_cc]))
+              continue;
             if (!imsrg_mpi::OwnsCrossCoupledChannel(*Z.modelspace, ch_cc))
               continue;
             TwoBodyChannel_CC &tbc_cc = Z.modelspace->GetTwoBodyChannel_CC(ch_cc);
@@ -1920,6 +2048,8 @@ namespace Commutator
               if (std::abs(sixj) < 1e-8)
                 continue;
               int ch_cc = Z.modelspace->GetTwoBodyChannelIndex(Jprime, parity_cc, Tz_cc);
+              if (active_cc != nullptr && (ch_cc >= static_cast<int>(active_cc->size()) || !(*active_cc)[ch_cc]))
+                continue;
               if (!imsrg_mpi::OwnsCrossCoupledChannel(*Z.modelspace, ch_cc))
                 continue;
               TwoBodyChannel_CC &tbc_cc = Z.modelspace->GetTwoBodyChannel_CC(ch_cc);
@@ -2080,6 +2210,137 @@ namespace Commutator
           ZMat(iket, ibra) += hZ * zijkl;
       } // for iket
     } // for ichbra
+  }
+
+  std::size_t GetPandyaBatchSize()
+  {
+    const char* env_value = std::getenv("IMSRG_MPI_PANDYA_CC_BATCH");
+    if (env_value != nullptr && env_value[0] != '\0')
+    {
+      char* endptr = nullptr;
+      unsigned long parsed = std::strtoul(env_value, &endptr, 10);
+      if (endptr != env_value && parsed > 0)
+        return static_cast<std::size_t>(parsed);
+    }
+    return 4;
+  }
+
+  void comm222_phss_rank_local_batches(Operator& X, Operator& Y, Operator& Z)
+  {
+    if (X.GetParticleRank() < 2 or Y.GetParticleRank() < 2)
+      return;
+
+    if (not(X.GetParity() == 0 and Y.GetParity() == 0 and Z.GetParity() == 0 and
+            X.GetTRank() == 0 and Y.GetTRank() == 0 and Z.GetTRank() == 0))
+    {
+      comm222_phss(X, Y, Z);
+      return;
+    }
+
+    int hy = Y.IsHermitian() ? 1 : -1;
+    double t_start_full = omp_get_wtime();
+
+    std::size_t nch = Z.modelspace->GetNumberTwoBodyChannels_CC();
+    std::size_t batch_size = GetPandyaBatchSize();
+    std::vector<std::size_t> local_channels;
+    std::vector<std::size_t> owned_counts(imsrg_mpi::Size(), 0);
+
+    for (int ch_cc : Z.modelspace->SortedTwoBodyChannels_CC)
+    {
+      int owner = imsrg_mpi::CrossCoupledChannelOwner(*Z.modelspace, ch_cc);
+      owned_counts[owner] += 1;
+      if (owner == imsrg_mpi::Rank())
+        local_channels.push_back(static_cast<std::size_t>(ch_cc));
+    }
+
+    std::size_t max_batches = 0;
+    for (std::size_t count : owned_counts)
+      max_batches = std::max(max_batches, (count + batch_size - 1) / batch_size);
+
+    for (std::size_t ibatch = 0; ibatch < max_batches; ++ibatch)
+    {
+      std::size_t first = ibatch * batch_size;
+      std::size_t last = std::min(first + batch_size, local_channels.size());
+
+      std::vector<std::size_t> batch_channels;
+      std::vector<char> active_cc(nch, 0);
+      std::vector<imsrg_mpi::TwoBodyElementRequest> requests;
+      for (std::size_t i = first; i < last; ++i)
+      {
+        std::size_t ch = local_channels[i];
+        batch_channels.push_back(ch);
+        active_cc[ch] = 1;
+        std::vector<imsrg_mpi::TwoBodyElementRequest> ch_requests = GetPandyaElementRequestsForChannel(X, Y, Z, ch);
+        requests.insert(requests.end(), ch_requests.begin(), ch_requests.end());
+      }
+
+      imsrg_mpi::PrefetchTwoBodyMatrixElements(X, requests);
+      imsrg_mpi::PrefetchTwoBodyMatrixElements(Y, requests);
+
+      double t_start = omp_get_wtime();
+      std::deque<arma::mat> Z_bar(nch);
+      for (std::size_t ch : batch_channels)
+      {
+        std::size_t nKets_cc = Z.modelspace->GetTwoBodyChannel_CC(ch).GetNumberKets();
+        Z_bar[ch].zeros(nKets_cc, 2 * nKets_cc);
+      }
+
+      #ifndef OPENBLAS_NOUSEOMP
+      #pragma omp parallel for schedule(dynamic, 1)
+      #endif
+      for (std::size_t ich = 0; ich < batch_channels.size(); ++ich)
+      {
+        std::size_t ch = batch_channels[ich];
+        const TwoBodyChannel_CC &tbc_cc = Z.modelspace->GetTwoBodyChannel_CC(ch);
+        index_t nKets_cc = tbc_cc.GetNumberKets();
+        std::size_t nph_kets = tbc_cc.GetKetIndex_hh().size() + tbc_cc.GetKetIndex_ph().size();
+
+        arma::mat Y_bar_ph;
+        arma::mat Xt_bar_ph;
+        DoPandyaTransformation_SingleChannel_XandY(X, Y, Xt_bar_ph, Y_bar_ph, ch);
+
+        auto &Zbar_ch = Z_bar[ch];
+        if (Y_bar_ph.size() < 1 or Xt_bar_ph.size() < 1)
+          continue;
+
+        arma::mat PhaseMatZ(nKets_cc, nKets_cc, arma::fill::ones);
+        for (index_t iket = 0; iket < nKets_cc; iket++)
+        {
+          const Ket &ket = tbc_cc.GetKet(iket);
+          if (Z.modelspace->phase((ket.op->j2 + ket.oq->j2) / 2) < 0)
+          {
+            PhaseMatZ.col(iket) *= -1;
+            PhaseMatZ.row(iket) *= -1;
+          }
+        }
+        arma::uvec phkets = arma::join_cols(tbc_cc.GetKetIndex_hh(), tbc_cc.GetKetIndex_ph());
+        auto PhaseMatY = PhaseMatZ.rows(phkets) * hy;
+
+        arma::mat Y_bar_ph_flip = arma::join_vert(Y_bar_ph.tail_rows(nph_kets) % PhaseMatY, Y_bar_ph.head_rows(nph_kets) % PhaseMatY);
+        Zbar_ch = Xt_bar_ph * arma::join_horiz(Y_bar_ph, Y_bar_ph_flip);
+
+        if (Z.IsHermitian() and X.IsHermitian() != Y.IsHermitian())
+        {
+          Zbar_ch.head_cols(nKets_cc) += Zbar_ch.head_cols(nKets_cc).t();
+        }
+        else
+        {
+          Zbar_ch.head_cols(nKets_cc) -= Zbar_ch.head_cols(nKets_cc).t();
+        }
+        Zbar_ch.tail_cols(nKets_cc) += Zbar_ch.tail_cols(nKets_cc).t() % PhaseMatZ;
+      }
+
+      X.profiler.timer["Build Z_bar"] += omp_get_wtime() - t_start;
+
+      t_start = omp_get_wtime();
+      AddInversePandyaTransformation(Z_bar, Z, &active_cc);
+      X.profiler.timer["InversePandyaTransformation"] += omp_get_wtime() - t_start;
+
+      imsrg_mpi::ClearTwoBodyCache(X);
+      imsrg_mpi::ClearTwoBodyCache(Y);
+    }
+
+    X.profiler.timer["comm222_phss"] += omp_get_wtime() - t_start_full;
   }
 
   //*****************************************************************************************

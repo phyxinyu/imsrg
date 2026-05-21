@@ -53,6 +53,7 @@ class TwoBodyME
  public:
   ModelSpace*  modelspace;
   std::map<std::array<size_t,2>,arma::mat> MatEl;
+  std::map<std::array<size_t,4>,double> SparseMatEl;
   size_t nChannels;
   bool hermitian;
   bool antihermitian;
@@ -85,6 +86,9 @@ class TwoBodyME
 
   bool HasMatrix(size_t chbra, size_t chket) const;
   bool HasMatrix(std::array<size_t,2> a) const;
+  bool TryGetStoredElement(size_t chbra, size_t chket, size_t ibra, size_t iket, double& value) const;
+  void SetSparseElement(size_t chbra, size_t chket, size_t ibra, size_t iket, double value);
+  void ClearSparseElements();
   arma::mat& GetMatrix(size_t chbra, size_t chket);
   arma::mat& GetMatrix(size_t ch);
   arma::mat& GetMatrix(std::array<size_t,2> a);

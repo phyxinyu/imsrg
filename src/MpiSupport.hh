@@ -52,6 +52,16 @@ namespace imsrg_mpi
   void RestrictOperatorToOwnedChannels(Operator& op);
   void PrefetchTwoBodyMatrices(Operator& op);
   void PrefetchTwoBodyMatrices(Operator& op, const std::vector<std::array<std::size_t, 2>>& requested_keys);
+
+  struct TwoBodyElementRequest
+  {
+    std::size_t ch_bra;
+    std::size_t ch_ket;
+    std::size_t bra_ind;
+    std::size_t ket_ind;
+  };
+
+  void PrefetchTwoBodyMatrixElements(Operator& op, const std::vector<TwoBodyElementRequest>& requested_elements);
   void ClearTwoBodyCache(Operator& op);
   void GatherOperatorToRoot(Operator& op);
 

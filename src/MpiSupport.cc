@@ -17,6 +17,7 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -561,11 +562,100 @@ namespace imsrg_mpi
     IMSRGProfiler::timer["MPI_PrefetchTwoBodyMatrices"] += omp_get_wtime() - t_start;
   }
 
+  void PrefetchTwoBodyMatrixElements(Operator& op, const std::vector<TwoBodyElementRequest>& requested_elements)
+  {
+    double t_start = omp_get_wtime();
+    if (!OwnerOnlyStorageEnabled() || !op.TwoBody.IsAllocated())
+    {
+      IMSRGProfiler::timer["MPI_PrefetchTwoBodyElements"] += omp_get_wtime() - t_start;
+      return;
+    }
+
+    ModelSpace& modelspace = *op.GetModelSpace();
+    EnsureChannelOwnership(modelspace);
+
+    std::vector<TwoBodyElementRequest> local_requests;
+    local_requests.reserve(requested_elements.size());
+    for (auto request : requested_elements)
+    {
+      if (request.ch_bra > request.ch_ket)
+      {
+        std::swap(request.ch_bra, request.ch_ket);
+        std::swap(request.bra_ind, request.ket_ind);
+      }
+      local_requests.push_back(request);
+    }
+    auto request_less = [](const TwoBodyElementRequest& lhs, const TwoBodyElementRequest& rhs) {
+      return std::tie(lhs.ch_bra, lhs.ch_ket, lhs.bra_ind, lhs.ket_ind) <
+             std::tie(rhs.ch_bra, rhs.ch_ket, rhs.bra_ind, rhs.ket_ind);
+    };
+    auto request_equal = [](const TwoBodyElementRequest& lhs, const TwoBodyElementRequest& rhs) {
+      return lhs.ch_bra == rhs.ch_bra && lhs.ch_ket == rhs.ch_ket &&
+             lhs.bra_ind == rhs.bra_ind && lhs.ket_ind == rhs.ket_ind;
+    };
+    std::sort(local_requests.begin(), local_requests.end(), request_less);
+    local_requests.erase(std::unique(local_requests.begin(), local_requests.end(), request_equal), local_requests.end());
+
+    int nranks = Size();
+    std::vector<std::vector<double>> request_buffers(nranks);
+    for (const auto& request : local_requests)
+    {
+      int owner = TwoBodyChannelOwner(modelspace, request.ch_bra);
+      if (owner == Rank())
+        continue;
+      auto& buffer = request_buffers[owner];
+      buffer.push_back(static_cast<double>(Rank()));
+      buffer.push_back(static_cast<double>(request.ch_bra));
+      buffer.push_back(static_cast<double>(request.ch_ket));
+      buffer.push_back(static_cast<double>(request.bra_ind));
+      buffer.push_back(static_cast<double>(request.ket_ind));
+    }
+
+    std::vector<double> incoming_requests = AlltoallvDoubles(request_buffers);
+    std::vector<std::vector<double>> value_buffers(nranks);
+    for (std::size_t ipacket = 0; ipacket + 4 < incoming_requests.size(); ipacket += 5)
+    {
+      int requester = static_cast<int>(incoming_requests[ipacket]);
+      std::size_t ch_bra = static_cast<std::size_t>(incoming_requests[ipacket + 1]);
+      std::size_t ch_ket = static_cast<std::size_t>(incoming_requests[ipacket + 2]);
+      std::size_t bra_ind = static_cast<std::size_t>(incoming_requests[ipacket + 3]);
+      std::size_t ket_ind = static_cast<std::size_t>(incoming_requests[ipacket + 4]);
+
+      double value = 0;
+      if (!op.TwoBody.TryGetStoredElement(ch_bra, ch_ket, bra_ind, ket_ind, value))
+      {
+        Abort("MPI element prefetch owner is missing a requested TwoBody element (" +
+              std::to_string(ch_bra) + "," + std::to_string(ch_ket) + ")[" +
+              std::to_string(bra_ind) + "," + std::to_string(ket_ind) + "].");
+      }
+      auto& buffer = value_buffers[requester];
+      buffer.push_back(static_cast<double>(ch_bra));
+      buffer.push_back(static_cast<double>(ch_ket));
+      buffer.push_back(static_cast<double>(bra_ind));
+      buffer.push_back(static_cast<double>(ket_ind));
+      buffer.push_back(value);
+    }
+
+    std::vector<double> incoming_values = AlltoallvDoubles(value_buffers);
+    for (std::size_t ipacket = 0; ipacket + 4 < incoming_values.size(); ipacket += 5)
+    {
+      std::size_t ch_bra = static_cast<std::size_t>(incoming_values[ipacket]);
+      std::size_t ch_ket = static_cast<std::size_t>(incoming_values[ipacket + 1]);
+      std::size_t bra_ind = static_cast<std::size_t>(incoming_values[ipacket + 2]);
+      std::size_t ket_ind = static_cast<std::size_t>(incoming_values[ipacket + 3]);
+      double value = incoming_values[ipacket + 4];
+      op.TwoBody.SetSparseElement(ch_bra, ch_ket, bra_ind, ket_ind, value);
+    }
+
+    IMSRGProfiler::timer["MPI_PrefetchTwoBodyElements"] += omp_get_wtime() - t_start;
+  }
+
   void ClearTwoBodyCache(Operator& op)
   {
     double t_start = omp_get_wtime();
     // Remove temporary prefetched non-owner matrices; owned resident storage remains.
     RestrictOperatorToOwnedChannels(op);
+    op.TwoBody.ClearSparseElements();
     IMSRGProfiler::timer["MPI_ClearTwoBodyCache"] += omp_get_wtime() - t_start;
   }
 
