@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -132,6 +133,206 @@ namespace
       chunk_fn(matrix.memptr() + offset, static_cast<int>(count));
       offset += count;
     }
+  }
+
+  bool ContributionKeyLess(const imsrg_mpi::OneBodyContribution& lhs,
+                           const imsrg_mpi::OneBodyContribution& rhs)
+  {
+    return std::tie(lhs.i, lhs.j) < std::tie(rhs.i, rhs.j);
+  }
+
+  bool ContributionKeyEqual(const imsrg_mpi::OneBodyContribution& lhs,
+                            const imsrg_mpi::OneBodyContribution& rhs)
+  {
+    return lhs.i == rhs.i && lhs.j == rhs.j;
+  }
+
+  bool ContributionKeyLess(const imsrg_mpi::TwoBodyContribution& lhs,
+                           const imsrg_mpi::TwoBodyContribution& rhs)
+  {
+    return std::tie(lhs.ch_bra, lhs.ch_ket, lhs.ibra, lhs.iket) <
+           std::tie(rhs.ch_bra, rhs.ch_ket, rhs.ibra, rhs.iket);
+  }
+
+  bool ContributionKeyEqual(const imsrg_mpi::TwoBodyContribution& lhs,
+                            const imsrg_mpi::TwoBodyContribution& rhs)
+  {
+    return lhs.ch_bra == rhs.ch_bra && lhs.ch_ket == rhs.ch_ket &&
+           lhs.ibra == rhs.ibra && lhs.iket == rhs.iket;
+  }
+
+  template <typename Contribution>
+  void SortAndMergeContributions(std::vector<Contribution>& contributions)
+  {
+    std::sort(contributions.begin(), contributions.end(),
+              [](const Contribution& lhs, const Contribution& rhs) {
+                return ContributionKeyLess(lhs, rhs);
+              });
+    std::vector<Contribution> merged;
+    merged.reserve(contributions.size());
+    for (std::size_t i = 0; i < contributions.size();)
+    {
+      Contribution accum = contributions[i];
+      double sum = 0.0;
+      double correction = 0.0;
+      std::size_t j = i;
+      while (j < contributions.size() && ContributionKeyEqual(contributions[i], contributions[j]))
+      {
+        const double y = contributions[j].value - correction;
+        const double t = sum + y;
+        correction = (t - sum) - y;
+        sum = t;
+        ++j;
+      }
+      accum.value = sum;
+      if (std::abs(accum.value) > 0.0)
+        merged.push_back(accum);
+      i = j;
+    }
+    contributions.swap(merged);
+  }
+
+  template <typename Contribution>
+  std::vector<std::vector<Contribution>> MergeThreadContributionBuffers(
+    std::vector<std::vector<std::vector<Contribution>>>& thread_send_buffers,
+    const std::string& timer_name)
+  {
+    const double t_start = omp_get_wtime();
+    const int nranks = imsrg_mpi::Size();
+    std::vector<std::vector<Contribution>> send_buffers(nranks);
+    for (int rank = 0; rank < nranks; ++rank)
+    {
+      std::size_t total = 0;
+      for (auto& thread_buffers : thread_send_buffers)
+        if (rank < static_cast<int>(thread_buffers.size()))
+          total += thread_buffers[rank].size();
+      send_buffers[rank].reserve(total);
+      for (auto& thread_buffers : thread_send_buffers)
+      {
+        if (rank >= static_cast<int>(thread_buffers.size()))
+          continue;
+        auto& src = thread_buffers[rank];
+        send_buffers[rank].insert(send_buffers[rank].end(),
+                                  std::make_move_iterator(src.begin()),
+                                  std::make_move_iterator(src.end()));
+        src.clear();
+      }
+      SortAndMergeContributions(send_buffers[rank]);
+    }
+    IMSRGProfiler::timer[timer_name] += omp_get_wtime() - t_start;
+    return send_buffers;
+  }
+
+#ifdef IMSRG_USE_MPI
+  MPI_Datatype GetOneBodyContributionType()
+  {
+    static MPI_Datatype mpi_type = MPI_DATATYPE_NULL;
+    if (mpi_type == MPI_DATATYPE_NULL)
+    {
+      imsrg_mpi::OneBodyContribution dummy{};
+      const int nblocks = 3;
+      int blocklengths[nblocks] = {1, 1, 1};
+      MPI_Datatype types[nblocks] = {MPI_INT, MPI_INT, MPI_DOUBLE};
+      MPI_Aint offsets[nblocks];
+      MPI_Aint base = 0;
+      MPI_Get_address(&dummy, &base);
+      MPI_Get_address(&dummy.i, &offsets[0]);
+      MPI_Get_address(&dummy.j, &offsets[1]);
+      MPI_Get_address(&dummy.value, &offsets[2]);
+      for (int i = 0; i < nblocks; ++i)
+        offsets[i] -= base;
+      MPI_Type_create_struct(nblocks, blocklengths, offsets, types, &mpi_type);
+      MPI_Type_commit(&mpi_type);
+    }
+    return mpi_type;
+  }
+
+  MPI_Datatype GetTwoBodyContributionType()
+  {
+    static MPI_Datatype mpi_type = MPI_DATATYPE_NULL;
+    if (mpi_type == MPI_DATATYPE_NULL)
+    {
+      imsrg_mpi::TwoBodyContribution dummy{};
+      const int nblocks = 5;
+      int blocklengths[nblocks] = {1, 1, 1, 1, 1};
+      MPI_Datatype types[nblocks] = {MPI_INT, MPI_INT, MPI_INT, MPI_INT, MPI_DOUBLE};
+      MPI_Aint offsets[nblocks];
+      MPI_Aint base = 0;
+      MPI_Get_address(&dummy, &base);
+      MPI_Get_address(&dummy.ch_bra, &offsets[0]);
+      MPI_Get_address(&dummy.ch_ket, &offsets[1]);
+      MPI_Get_address(&dummy.ibra, &offsets[2]);
+      MPI_Get_address(&dummy.iket, &offsets[3]);
+      MPI_Get_address(&dummy.value, &offsets[4]);
+      for (int i = 0; i < nblocks; ++i)
+        offsets[i] -= base;
+      MPI_Type_create_struct(nblocks, blocklengths, offsets, types, &mpi_type);
+      MPI_Type_commit(&mpi_type);
+    }
+    return mpi_type;
+  }
+#endif
+
+  template <typename Contribution>
+  std::vector<Contribution> AlltoallvContributions(
+    const std::vector<std::vector<Contribution>>& send_buffers,
+    const std::string& timer_name
+#ifdef IMSRG_USE_MPI
+    , MPI_Datatype mpi_type
+#endif
+    )
+  {
+    const double t_start = omp_get_wtime();
+    std::vector<Contribution> received;
+#ifdef IMSRG_USE_MPI
+    if (imsrg_mpi::Enabled())
+    {
+      const int nranks = imsrg_mpi::Size();
+      std::vector<int> send_counts(nranks, 0);
+      std::vector<int> recv_counts(nranks, 0);
+      for (int rank = 0; rank < nranks; ++rank)
+      {
+        if (rank < static_cast<int>(send_buffers.size()))
+          send_counts[rank] = static_cast<int>(send_buffers[rank].size());
+      }
+
+      MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+      std::vector<int> send_displs(nranks, 0);
+      std::vector<int> recv_displs(nranks, 0);
+      for (int rank = 1; rank < nranks; ++rank)
+      {
+        send_displs[rank] = send_displs[rank - 1] + send_counts[rank - 1];
+        recv_displs[rank] = recv_displs[rank - 1] + recv_counts[rank - 1];
+      }
+
+      const int total_send = send_displs.empty() ? 0 : send_displs.back() + send_counts.back();
+      const int total_recv = recv_displs.empty() ? 0 : recv_displs.back() + recv_counts.back();
+      std::vector<Contribution> send_flat(static_cast<std::size_t>(total_send));
+      for (int rank = 0; rank < nranks; ++rank)
+      {
+        if (rank < static_cast<int>(send_buffers.size()) && !send_buffers[rank].empty())
+          std::copy(send_buffers[rank].begin(), send_buffers[rank].end(),
+                    send_flat.begin() + send_displs[rank]);
+      }
+      received.resize(static_cast<std::size_t>(total_recv));
+      MPI_Alltoallv(send_flat.data(), send_counts.data(), send_displs.data(), mpi_type,
+                    received.data(), recv_counts.data(), recv_displs.data(), mpi_type,
+                    MPI_COMM_WORLD);
+
+      IMSRGProfiler::counter[timer_name + "_SendTotal"] += total_send;
+      IMSRGProfiler::counter[timer_name + "_RecvTotal"] += total_recv;
+      IMSRGProfiler::counter[timer_name + "_SendMaxPeer"] += send_counts.empty() ? 0 : *std::max_element(send_counts.begin(), send_counts.end());
+      IMSRGProfiler::counter[timer_name + "_RecvMaxPeer"] += recv_counts.empty() ? 0 : *std::max_element(recv_counts.begin(), recv_counts.end());
+    }
+    else
+#endif
+    {
+      if (!send_buffers.empty())
+        received = send_buffers.front();
+    }
+    IMSRGProfiler::timer[timer_name] += omp_get_wtime() - t_start;
+    return received;
   }
 }
 
@@ -302,6 +503,53 @@ namespace imsrg_mpi
   bool OwnsTwoBodyMatrix(ModelSpace& modelspace, const std::array<std::size_t, 2>& key)
   {
     return !OwnerOnlyStorageEnabled() || TwoBodyChannelOwner(modelspace, key[0]) == Rank();
+  }
+
+  void ExchangeAndApplyOneBodyContributions(
+    Operator& op,
+    std::vector<std::vector<std::vector<OneBodyContribution>>>& thread_send_buffers)
+  {
+    auto send_buffers = MergeThreadContributionBuffers(thread_send_buffers, "MPI_MergeOneBodyContributions_Send");
+    std::vector<OneBodyContribution> received = AlltoallvContributions(
+      send_buffers, "MPI_AlltoallvOneBodyContributions"
+#ifdef IMSRG_USE_MPI
+      , GetOneBodyContributionType()
+#endif
+      );
+
+    const double t_merge = omp_get_wtime();
+    SortAndMergeContributions(received);
+    for (const auto& c : received)
+    {
+      if (Enabled() && Size() > 1 && c.i % Size() != Rank())
+        Abort("One-body contribution delivered to non-owner rank.");
+      op.OneBody(c.i, c.j) += c.value;
+    }
+    IMSRGProfiler::timer["MPI_MergeOneBodyContributions_Recv"] += omp_get_wtime() - t_merge;
+  }
+
+  void ExchangeAndApplyTwoBodyContributions(
+    Operator& op,
+    std::vector<std::vector<std::vector<TwoBodyContribution>>>& thread_send_buffers)
+  {
+    auto send_buffers = MergeThreadContributionBuffers(thread_send_buffers, "MPI_MergeTwoBodyContributions_Send");
+    std::vector<TwoBodyContribution> received = AlltoallvContributions(
+      send_buffers, "MPI_AlltoallvTwoBodyContributions"
+#ifdef IMSRG_USE_MPI
+      , GetTwoBodyContributionType()
+#endif
+      );
+
+    const double t_merge = omp_get_wtime();
+    SortAndMergeContributions(received);
+    for (const auto& c : received)
+    {
+      std::array<std::size_t, 2> key{static_cast<std::size_t>(c.ch_bra), static_cast<std::size_t>(c.ch_ket)};
+      if (OwnerOnlyStorageEnabled() && !OwnsTwoBodyMatrix(*op.GetModelSpace(), key))
+        Abort("Two-body contribution delivered to non-owner rank.");
+      op.TwoBody.AddToTBME(c.ch_bra, c.ch_ket, c.ibra, c.iket, c.value);
+    }
+    IMSRGProfiler::timer["MPI_MergeTwoBodyContributions_Recv"] += omp_get_wtime() - t_merge;
   }
 
   void AllreduceInPlace(double& value)

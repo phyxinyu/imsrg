@@ -173,6 +173,7 @@ int main(int argc, char** argv)
   bool imsrg3_no_qqq = parameters.s("imsrg3_no_qqq") == "true";
   bool write_omega = parameters.s("write_omega") == "true";
   bool mpi_imsrg2 = parameters.s("mpi_imsrg2") == "true";
+  std::string imsrg2_commutator_backend = parameters.s("imsrg2_commutator_backend");
   bool freeze_occupations = parameters.s("freeze_occupations")=="true";
   bool discard_no2b_from_3n = parameters.s("discard_no2b_from_3n")=="true";
   bool hunter_gatherer = parameters.s("hunter_gatherer") == "true";
@@ -189,6 +190,7 @@ int main(int argc, char** argv)
   bool write_HF_ops = parameters.s("write_HF_ops") == "true";  // added by Antoine Belley
 
   imsrg_mpi::SetEnabled(mpi_imsrg2);
+  Commutator::SetIMSRG2CommutatorBackend(imsrg2_commutator_backend);
   if (mpi_imsrg2 && imsrg_mpi::Enabled() && imsrg_mpi::IsRoot())
   {
     std::cout << "Using experimental MPI IMSRG(2) scalar flow with "

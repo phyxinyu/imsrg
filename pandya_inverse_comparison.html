@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inverse Pandya MPI 方案对比</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --ink: #18202b;
+      --muted: #5b6675;
+      --line: #d8dee8;
+      --panel: #ffffff;
+      --old: #1f6feb;
+      --new: #0f8a63;
+      --warn: #a15c00;
+      --code: #eef2f7;
+      --shadow: 0 14px 32px rgba(25, 35, 55, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.6;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 34px 0 54px;
+    }
+
+    header {
+      padding: 32px 0 22px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 46px);
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 18px;
+      margin: 0;
+    }
+
+    section {
+      margin-top: 28px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 20px;
+    }
+
+    .panel.old {
+      border-top: 5px solid var(--old);
+    }
+
+    .panel.new {
+      border-top: 5px solid var(--new);
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .tag.old {
+      background: var(--old);
+    }
+
+    .tag.new {
+      background: var(--new);
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .step {
+      border: 1px solid var(--line);
+      border-left-width: 5px;
+      border-radius: 6px;
+      background: #fbfcff;
+      padding: 10px 12px;
+      min-height: 48px;
+    }
+
+    .old .step {
+      border-left-color: var(--old);
+    }
+
+    .new .step {
+      border-left-color: var(--new);
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 2px;
+    }
+
+    .arrow {
+      text-align: center;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 13px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #edf1f7;
+      font-size: 15px;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    code {
+      background: var(--code);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    pre {
+      margin: 12px 0 0;
+      background: #17202c;
+      color: #e9eef6;
+      border-radius: 8px;
+      padding: 14px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .note {
+      border-left: 5px solid var(--warn);
+      background: #fff8ed;
+      color: #4d370d;
+      padding: 14px 16px;
+      border-radius: 6px;
+    }
+
+    .list {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    .list li {
+      margin: 6px 0;
+    }
+
+    .score {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 10px;
+      align-items: center;
+      margin: 10px 0;
+    }
+
+    .bar {
+      height: 12px;
+      border-radius: 999px;
+      background: #dfe5ef;
+      overflow: hidden;
+    }
+
+    .fill {
+      height: 100%;
+    }
+
+    .fill.old {
+      background: var(--old);
+    }
+
+    .fill.new {
+      background: var(--new);
+    }
+
+    @media (max-width: 820px) {
+      main {
+        width: min(100vw - 24px, 1180px);
+        padding-top: 18px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .score {
+        grid-template-columns: 1fr;
+      }
+
+      th,
+      td {
+        padding: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Inverse Pandya MPI 方案对比</h1>
+      <p class="lead">
+        对比当前 output-driven inverse Pandya 路径和计划中的 cc-channel-driven scatter 路径。
+        核心问题是：<code>Z_bar(ch_cc)</code> 由 cross-coupled channel owner 生成，但最终
+        <code>Z.TwoBody(ch, ch)</code> 必须由 ordinary two-body channel owner 写入。
+      </p>
+    </header>
+
+    <section class="grid" aria-label="方案流程对比">
+      <article class="panel old">
+        <span class="tag old">旧版本</span>
+        <h2>普通输出 channel 驱动</h2>
+        <p>
+          每个 rank 在 inverse Pandya 阶段遍历普通 <code>Z(ch, ibra, iket)</code> 空间，
+          只使用自己拥有的 <code>ch_cc</code> 对该输出元素的部分贡献，然后发送给
+          <code>TwoBodyChannelOwner(ch)</code>。
+        </p>
+        <div class="flow">
+          <div class="step">
+            <strong>1. 计算本 rank 拥有的 cc blocks</strong>
+            <code>Z_bar[ch_cc]</code> 只在 <code>CrossCoupledChannelOwner(ch_cc)</code> 上生成。
+          </div>
+          <div class="arrow">↓</div>
+          <div class="step">
+            <strong>2. 扫所有普通输出元素</strong>
+            遍历 <code>ch, ibra, iket</code>，在角动量循环中筛选本 rank 拥有的 <code>ch_cc</code>。
+          </div>
+          <div class="arrow">↓</div>
+          <div class="step">
+            <strong>3. 形成 partial zijkl</strong>
+            同一输出元素在本 rank 上先局部求和。
+          </div>
+          <div class="arrow">↓</div>
+          <div class="step">
+            <strong>4. 发送给普通 channel owner</strong>
+            通过 <code>Alltoallv</code> 发送 <code>(ch, ibra, iket, value)</code>。
+          </div>
+        </div>
+      </article>
+
+      <article class="panel new">
+        <span class="tag new">新版本</span>
+        <h2>cc channel scatter 驱动</h2>
+        <p>
+          每个 rank 只处理自己拥有的 <code>ch_cc</code>。根据预先构造的 inverse Pandya plan，
+          直接把 <code>Z_bar[ch_cc]</code> 的贡献 scatter 到普通 <code>Z(ch, ibra, iket)</code> owner。
+        </p>
+        <div class="flow">
+          <div class="step">
+            <strong>1. 计算本 rank 拥有的 cc blocks</strong>
+            与旧版本一致，仍按 <code>CrossCoupledChannelOwner(ch_cc)</code> 构造 <code>Z_bar</code>。
+          </div>
+          <div class="arrow">↓</div>
+          <div class="step">
+            <strong>2. 查 inverse plan</strong>
+            对每个 <code>ch_cc</code>，读取它会贡献到哪些 <code>ch, ibra, iket</code>。
+          </div>
+          <div class="arrow">↓</div>
+          <div class="step">
+            <strong>3. 生成 contribution events</strong>
+            计算 <code>delta = coeff * Zbar(row_cc, col_cc)</code>，按目标 rank 分桶。
+          </div>
+          <div class="arrow">↓</div>
+          <div class="step">
+            <strong>4. 本地合并后发送</strong>
+            先按 <code>(ch, ibra, iket)</code> 求和，再通过 <code>Alltoallv</code> 发给 owner。
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section aria-label="详细对比表">
+      <h2>详细对比</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>旧版本：output-driven</th>
+            <th>新版本：cc-scatter-driven</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>自然工作单元</td>
+            <td>普通 two-body 输出元素 <code>Z(ch, ibra, iket)</code></td>
+            <td>cross-coupled channel <code>Z_bar(ch_cc)</code></td>
+          </tr>
+          <tr>
+            <td>主循环</td>
+            <td>扫所有普通 <code>ch</code>、<code>ibra</code>、<code>iket</code></td>
+            <td>扫本 rank 拥有的 <code>ch_cc</code> 以及对应 scatter plan</td>
+          </tr>
+          <tr>
+            <td>owner 关系</td>
+            <td><code>ch_cc</code> owner 负责部分求和，<code>ch</code> owner 最终写入</td>
+            <td><code>ch_cc</code> owner 生产事件，<code>ch</code> owner 接收并合并写入</td>
+          </tr>
+          <tr>
+            <td>重复扫描</td>
+            <td>较多。多个 rank 都会扫普通输出空间，只是筛掉非本 rank 的 <code>ch_cc</code></td>
+            <td>较少。每个 rank 只处理自己拥有的 cc channel plan</td>
+          </tr>
+          <tr>
+            <td>局部性</td>
+            <td>围绕普通输出元素组织，对 <code>Z_bar[ch_cc]</code> 的访问较分散</td>
+            <td>围绕单个 <code>Z_bar[ch_cc]</code> 连续消费，缓存局部性更好</td>
+          </tr>
+          <tr>
+            <td>通信粒度</td>
+            <td>本 rank 已经把同一输出元素的部分贡献局部合成一个 <code>zijkl</code></td>
+            <td>如果不合并会产生更多小贡献，必须做本地排序求和</td>
+          </tr>
+          <tr>
+            <td>额外内存</td>
+            <td>较低，不需要 inverse plan</td>
+            <td>较高，需要 <code>inverse_plan_by_cc</code> 或可重建的轻量 plan</td>
+          </tr>
+          <tr>
+            <td>实现风险</td>
+            <td>低。公式路径贴近现有实现</td>
+            <td>中高。必须严格处理 phase、norm、Hermitian、重复计数和 batch 过滤</td>
+          </tr>
+          <tr>
+            <td>可扩展性</td>
+            <td>rank 增加后，普通空间重复扫描成本更明显</td>
+            <td>更适合大模型空间和多 rank，因为工作天然按 cc channel 分布</td>
+          </tr>
+          <tr>
+            <td>适合阶段</td>
+            <td>作为正确性基线和第一阶段 typed communication 重构</td>
+            <td>作为性能优化路径，通过环境变量与旧路径并行验证</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="grid" aria-label="伪代码对比">
+      <article class="panel old">
+        <span class="tag old">旧版本伪代码</span>
+        <pre><code>for ch in ordinary_channels:
+  for ibra in channel_kets(ch):
+    for iket in upper_triangle(ch):
+      zijkl = 0
+
+      for Jprime in allowed_inverse_pandya_terms:
+        ch_cc = get_cc_channel(Jprime, ...)
+
+        if owns_cross_coupled_channel(ch_cc):
+          zijkl += coeff * Zbar[ch_cc](row_cc, col_cc)
+
+      owner = TwoBodyChannelOwner(ch)
+      send_buffer[owner].push(ch, ibra, iket, zijkl)
+
+received = Alltoallv(send_buffer)
+for c in received:
+  Z(ch)(ibra, iket) += c.value</code></pre>
+      </article>
+
+      <article class="panel new">
+        <span class="tag new">新版本伪代码</span>
+        <pre><code>for ch_cc in owned_cross_coupled_channels:
+  Zbar_ch = build_Zbar(ch_cc)
+
+  for p in inverse_plan_by_cc[ch_cc]:
+    dz = p.coeff * Zbar_ch(p.row_cc, p.col_cc)
+
+    if abs(dz) &lt; cutoff:
+      continue
+
+    owner = TwoBodyChannelOwner(p.ch)
+    thread_buffer[tid][owner].push(p.ch, p.ibra, p.iket, dz)
+
+local_merge_by_key(thread_buffer)
+received = Alltoallv(send_buffer)
+remote_merge_by_key(received)
+apply_to_Z(received)</code></pre>
+      </article>
+    </section>
+
+    <section aria-label="性能倾向">
+      <h2>性能倾向</h2>
+      <div class="panel">
+        <div class="score">
+          <strong>旧版本正确性风险</strong>
+          <div class="bar"><div class="fill old" style="width: 28%"></div></div>
+        </div>
+        <div class="score">
+          <strong>新版本正确性风险</strong>
+          <div class="bar"><div class="fill new" style="width: 68%"></div></div>
+        </div>
+        <div class="score">
+          <strong>旧版本重复扫描成本</strong>
+          <div class="bar"><div class="fill old" style="width: 78%"></div></div>
+        </div>
+        <div class="score">
+          <strong>新版本重复扫描成本</strong>
+          <div class="bar"><div class="fill new" style="width: 30%"></div></div>
+        </div>
+        <div class="score">
+          <strong>旧版本通信复杂度</strong>
+          <div class="bar"><div class="fill old" style="width: 45%"></div></div>
+        </div>
+        <div class="score">
+          <strong>新版本通信复杂度</strong>
+          <div class="bar"><div class="fill new" style="width: 70%"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-label="关键注意事项">
+      <h2>关键注意事项</h2>
+      <div class="note">
+        新版本只有在加入本地合并后才值得做。否则 <code>ch_cc</code> scatter 会产生大量细碎
+        <code>(ch, ibra, iket, value)</code> 事件，把旧版本节省下来的扫描成本转移成通信成本。
+      </div>
+    </section>
+
+    <section class="grid" aria-label="迁移路线">
+      <article class="panel">
+        <h2>推荐迁移路线</h2>
+        <ol class="list">
+          <li>先把旧路径的四个 <code>double</code> 包改成 typed <code>TwoBodyContribution</code>。</li>
+          <li>保持旧算法不变，验证 MPI 与非 MPI、单 rank 与多 rank 结果一致。</li>
+          <li>从现有 inverse Pandya 循环抽取 <code>inverse_plan_by_cc</code>。</li>
+          <li>加入 <code>cc_scatter</code> 路径，用环境变量切换。</li>
+          <li>比较 <code>Z.TwoBody</code> 差异、Alltoallv 数据量、最大 peer 负载和 wall time。</li>
+        </ol>
+      </article>
+
+      <article class="panel">
+        <h2>建议开关</h2>
+        <pre><code>IMSRG_MPI_PANDYA_INVERSE=output
+IMSRG_MPI_PANDYA_INVERSE=cc_scatter
+IMSRG_MPI_PANDYA_CC_BATCH=4</code></pre>
+        <p>
+          <code>output</code> 保留当前路径作为基线；
+          <code>cc_scatter</code> 启用新路径；
+          batch size 继续控制每次持有的 <code>Z_bar(ch_cc)</code> 数量。
+        </p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

@@ -380,6 +380,7 @@ target_link_libraries(
     armadillo
     ModelSpace
     Operator
+    OpenMP::OpenMP_CXX
 )
 if(IMSRG_USE_MPI)
     target_compile_definitions(MpiSupport PUBLIC IMSRG_USE_MPI)
@@ -533,7 +534,7 @@ target_link_libraries(
 
 add_library(
     Commutator
-    Commutator.hh Commutator.cc
+    Commutator.hh Commutator.cc EventIMSRG2.cc
 )
 target_link_libraries(
     Commutator

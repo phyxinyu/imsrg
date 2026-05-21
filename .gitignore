@@ -1,6 +1,7 @@
 .vscode/
 build/
 build-mpi/
+fciqmc-ex-mpi/
 output/
 work/scripts/output/
 imsrg_log/

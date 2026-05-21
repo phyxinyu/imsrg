@@ -42,6 +42,29 @@ namespace imsrg_mpi
   int CrossCoupledChannelOwner(ModelSpace& modelspace, std::size_t ch);
   bool OwnsTwoBodyMatrix(ModelSpace& modelspace, const std::array<std::size_t, 2>& key);
 
+  struct OneBodyContribution
+  {
+    int i;
+    int j;
+    double value;
+  };
+
+  struct TwoBodyContribution
+  {
+    int ch_bra;
+    int ch_ket;
+    int ibra;
+    int iket;
+    double value;
+  };
+
+  void ExchangeAndApplyOneBodyContributions(
+    Operator& op,
+    std::vector<std::vector<std::vector<OneBodyContribution>>>& thread_send_buffers);
+  void ExchangeAndApplyTwoBodyContributions(
+    Operator& op,
+    std::vector<std::vector<std::vector<TwoBodyContribution>>>& thread_send_buffers);
+
   void AllreduceInPlace(double& value);
   void AllreduceInPlace(arma::mat& matrix);
   void BroadcastMatrixFromRank(arma::mat& matrix, int root);

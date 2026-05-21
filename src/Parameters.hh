@@ -82,6 +82,7 @@ std::map<std::string,std::string> Parameters::string_par = {
   {"goose_tank",		"false"},	// do goose_tank correction to commutators
   {"write_omega",		"false"},	// write omega to disk
   {"mpi_imsrg2",		"false"},	// use experimental MPI implementation for scalar IMSRG(2)
+  {"imsrg2_commutator_backend", "matrix"},      // matrix or event backend for scalar IMSRG(2) commutators
   {"nucleon_mass_correction",	"false"},	// include effect of proton-neutron mass splitting
   {"hunter_gatherer",	        "false"},	// use hunter-gatherer approach to splitting omega
   {"relativistic_correction",   "false"},       // include the p^4 relativistic correction to the kinetic energy

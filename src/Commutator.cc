@@ -35,10 +35,24 @@ namespace Commutator
 
   bool single_thread = false;
   bool verbose = false;
+  std::string imsrg2_commutator_backend = "matrix";
 
   std::vector<std::array<std::size_t, 2>> GetPandyaPrefetchKeys(const Operator& X, const Operator& Y, const Operator& Z);
   std::vector<imsrg_mpi::TwoBodyElementRequest> GetPandyaElementRequestsForChannel(const Operator& X, const Operator& Y, const Operator& Z, std::size_t ch);
   void comm222_phss_rank_local_batches(Operator& X, Operator& Y, Operator& Z);
+
+  namespace EventIMSRG2
+  {
+    void comm110_event(const Operator& X, const Operator& Y, Operator& Z);
+    void comm220_event(const Operator& X, const Operator& Y, Operator& Z);
+    void comm111_event(const Operator& X, const Operator& Y, Operator& Z);
+    void comm121_event(const Operator& X, const Operator& Y, Operator& Z);
+    void comm221_event(const Operator& X, const Operator& Y, Operator& Z);
+    void comm122_event(const Operator& X, const Operator& Y, Operator& Z);
+    void comm222_pp_hh_event(const Operator& X, const Operator& Y, Operator& Z);
+    void comm222_ph_event(const Operator& X, const Operator& Y, Operator& Z);
+    std::vector<std::array<std::size_t, 2>> ScalarTwoBodyKeys(ModelSpace& modelspace);
+  }
 
   std::map<std::string, bool> comm_term_on = {
       {"comm110ss", true},
@@ -90,6 +104,16 @@ namespace Commutator
 
   void TurnOffTerm(std::string term) { comm_term_on[term] = false; }
   void TurnOnTerm(std::string term) { comm_term_on[term] = true; }
+  void SetIMSRG2CommutatorBackend(std::string backend)
+  {
+    if (backend != "matrix" && backend != "event")
+    {
+      std::cerr << "Unknown IMSRG(2) commutator backend \"" << backend
+                << "\". Expected \"matrix\" or \"event\"." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    imsrg2_commutator_backend = backend;
+  }
 
   void PrintSettings()
   {
@@ -97,6 +121,7 @@ namespace Commutator
     std::cout << "use_imsrg3_n7 : " << use_imsrg3_n7 << std::endl;
     std::cout << "use_imsrg3_mp4 : " << use_imsrg3_mp4 << std::endl;
     std::cout << "single_thread : " << single_thread << std::endl;
+    std::cout << "imsrg2_commutator_backend : " << imsrg2_commutator_backend << std::endl;
     for (auto &it : comm_term_on)
     {
       std::cout << it.first << " : " << it.second << std::endl;
@@ -370,43 +395,91 @@ namespace Commutator
 
 
     // Here is where we start calling the IMSRG(2) commutator expressions.
-    if (comm_term_on["comm110ss"])
-      comm110ss(X_work, Y_work, Z);
-    if (comm_term_on["comm220ss"])
-      comm220ss(X_work, Y_work, Z);
-
-
-    if (comm_term_on["comm111ss"])
-      comm111ss(X_work, Y_work, Z);
-    if (comm_term_on["comm121ss"])
-      comm121ss(X_work, Y_work, Z);
-    if (comm_term_on["comm122ss"])
-      comm122ss(X_work, Y_work, Z);
-
-
-    // The 222_pp_hh and 221ss terms can share a common intermediate
-    // so if we're computing both, we do them together
-    if (comm_term_on["comm222_pp_hhss"] and comm_term_on["comm221ss"])
+    if (imsrg2_commutator_backend == "event")
     {
-      comm222_pp_hh_221ss(X_work, Y_work, Z);
-    }
-    else // otherwise, just do the one that is turned on.
-    {
-      if (comm_term_on["comm222_pp_hhss"])
-        comm222_pp_hhss(X_work, Y_work, Z);
-      if (comm_term_on["comm221ss"])
-        comm221ss(X_work, Y_work, Z);
-    }
+      if (use_imsrg3 || X_work.GetParticleRank() > 2 || Y_work.GetParticleRank() > 2 ||
+          X_work.GetTRank() != 0 || Y_work.GetTRank() != 0 ||
+          X_work.GetParity() != 0 || Y_work.GetParity() != 0)
+      {
+        if (imsrg_mpi::Enabled())
+          imsrg_mpi::Abort("imsrg2_commutator_backend=event currently supports scalar IMSRG(2) Hamiltonian commutators only.");
+        std::cerr << "imsrg2_commutator_backend=event currently supports scalar IMSRG(2) Hamiltonian commutators only." << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
 
-
-    //    if (comm_term_on["comm222_pp_hh_221ss"])
-    //      comm222_pp_hh_221ss(X, Y, Z);
-    if (comm_term_on["comm222_phss"])
-    {
       if (imsrg_mpi::OwnerOnlyStorageEnabled())
-        comm222_phss_rank_local_batches(X_work, Y_work, Z);
-      else
-        comm222_phss(X_work, Y_work, Z);
+      {
+        const auto scalar_tbme_keys = EventIMSRG2::ScalarTwoBodyKeys(ms);
+        imsrg_mpi::PrefetchTwoBodyMatrices(X_work, scalar_tbme_keys);
+        imsrg_mpi::PrefetchTwoBodyMatrices(Y_work, scalar_tbme_keys);
+      }
+
+      if (comm_term_on["comm110ss"])
+        EventIMSRG2::comm110_event(X_work, Y_work, Z);
+      if (comm_term_on["comm220ss"])
+        EventIMSRG2::comm220_event(X_work, Y_work, Z);
+
+      if (comm_term_on["comm111ss"])
+        EventIMSRG2::comm111_event(X_work, Y_work, Z);
+      if (comm_term_on["comm121ss"])
+        EventIMSRG2::comm121_event(X_work, Y_work, Z);
+      if (comm_term_on["comm122ss"])
+        EventIMSRG2::comm122_event(X_work, Y_work, Z);
+
+      if (comm_term_on["comm222_pp_hhss"])
+        EventIMSRG2::comm222_pp_hh_event(X_work, Y_work, Z);
+      if (comm_term_on["comm221ss"])
+        EventIMSRG2::comm221_event(X_work, Y_work, Z);
+
+      if (comm_term_on["comm222_phss"])
+        EventIMSRG2::comm222_ph_event(X_work, Y_work, Z);
+
+      if (imsrg_mpi::OwnerOnlyStorageEnabled())
+      {
+        imsrg_mpi::ClearTwoBodyCache(X_work);
+        imsrg_mpi::ClearTwoBodyCache(Y_work);
+      }
+    }
+    else
+    {
+      if (comm_term_on["comm110ss"])
+        comm110ss(X_work, Y_work, Z);
+      if (comm_term_on["comm220ss"])
+        comm220ss(X_work, Y_work, Z);
+
+
+      if (comm_term_on["comm111ss"])
+        comm111ss(X_work, Y_work, Z);
+      if (comm_term_on["comm121ss"])
+        comm121ss(X_work, Y_work, Z);
+      if (comm_term_on["comm122ss"])
+        comm122ss(X_work, Y_work, Z);
+
+
+      // The 222_pp_hh and 221ss terms can share a common intermediate
+      // so if we're computing both, we do them together
+      if (comm_term_on["comm222_pp_hhss"] and comm_term_on["comm221ss"])
+      {
+        comm222_pp_hh_221ss(X_work, Y_work, Z);
+      }
+      else // otherwise, just do the one that is turned on.
+      {
+        if (comm_term_on["comm222_pp_hhss"])
+          comm222_pp_hhss(X_work, Y_work, Z);
+        if (comm_term_on["comm221ss"])
+          comm221ss(X_work, Y_work, Z);
+      }
+
+
+      //    if (comm_term_on["comm222_pp_hh_221ss"])
+      //      comm222_pp_hh_221ss(X, Y, Z);
+      if (comm_term_on["comm222_phss"])
+      {
+        if (imsrg_mpi::OwnerOnlyStorageEnabled())
+          comm222_phss_rank_local_batches(X_work, Y_work, Z);
+        else
+          comm222_phss(X_work, Y_work, Z);
+      }
     }
 
 

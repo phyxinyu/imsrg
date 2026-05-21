@@ -48,6 +48,7 @@ namespace Commutator
     void SetUseIMSRG3N7(bool tf);
     void SetUseIMSRG3_MP4(bool tf);
     void SetVerbose(bool tf); //Controls if we print out more timing info, useful for optimization work.
+    void SetIMSRG2CommutatorBackend(std::string backend);
 
     void SetUseIMSRG3N7_Tensor(bool tf);
     void SetUseIMSRG3_Tensor(bool tf);
