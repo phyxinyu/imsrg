@@ -147,35 +147,25 @@ add_subdirectory(src)
 if(IMSRG_BUILD_PYTHON_BINDINGS)
     #ADD tests to be run directly in the build process
     enable_testing()
-    add_test (
-        NAME UnitTest
-        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/UnitTest.py 
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    )
-    add_test (
-        NAME UnitTestCommutators2
-        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/UnitTestCommutators2.py   
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    )
-    add_test(
-        NAME UnitTestCommutators3
-        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/UnitTestCommutators3.py
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}   
-        
-    )
-    add_test (
-        NAME UnitTestFactorized
-        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/UnitTestFactorized.py 
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    )
-    add_test (
-        NAME UnitTestTriples
-        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/UnitTestTriples.py 
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    )
-    add_test (
-        NAME UnitTestTensor
-        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/UnitTestTensor.py  
-        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    )
+    if(NOT PYTHON_EXECUTABLE)
+        set(PYTHON_EXECUTABLE python3)
+    endif()
+
+    function(add_pyimsrg_test test_name script_path)
+        add_test(
+            NAME ${test_name}
+            COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=$<TARGET_FILE_DIR:pyIMSRG>"
+                    ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${script_path}
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+    endfunction()
+
+    add_pyimsrg_test(UnitTest tests/UnitTest.py)
+    add_pyimsrg_test(UnitTestCommutators2 test/UnitTestCommutators2.py)
+    add_pyimsrg_test(UnitTestCommutators3 test/UnitTestCommutators3.py)
+    add_pyimsrg_test(UnitTestFactorized test/UnitTestFactorized.py)
+    add_pyimsrg_test(UnitTestTriples test/UnitTestTriples.py)
+    add_pyimsrg_test(UnitTestTensor test/UnitTestTensor.py)
+    add_pyimsrg_test(UnitTestNormalOrdering test/UnitTestNormalOrdering.py)
+    add_pyimsrg_test(UnitTestEventIMSRG2 test/UnitTestEventIMSRG2.py)
 endif()

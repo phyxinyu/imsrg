@@ -27,7 +27,7 @@ elif call('type '+'srun', shell=True, stdout=PIPE, stderr=PIPE) == 0:
 
 # The code uses OpenMP and benefits from up to at least 24 threads
 NTHREADS = 48
-exe = '/Users/xinyu/Desktop/imsrg/build/imsrg++'
+exe = '/Users/xinyu/Desktop/imsrg-mpi/build-mpi/src/imsrg++'
 
 # Flag to swith between submitting to the scheduler or running in the current shell
 # batch_mode=False
@@ -47,7 +47,7 @@ ELEM = ['n', 'H', 'He', 'Li', 'Be', 'B', 'C', 'N',
 ARGS = {}
 
 # Maximum value of s, and maximum step size ds
-ARGS['smax'] = '0.02'
+ARGS['smax'] = '0.2'
 ARGS['dsmax'] = '0.01'
 ARGS['basis'] = "oscillator"
 # ARGS['lmax3'] = '10' # for comparing with Heiko
@@ -69,6 +69,7 @@ ARGS['file3e1max'] = '18 file3e2max=36 file3e3max=24'
 
 # Solution method
 ARGS['method'] = 'magnus'
+ARGS['imsrg2_commutator_backend'] = 'event'
 # ARGS['method'] = 'brueckner'
 # ARGS['method'] = 'flow'
 # ARGS['method'] = 'HF'
