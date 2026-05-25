@@ -510,12 +510,20 @@ namespace imsrg_mpi
     std::vector<std::vector<std::vector<OneBodyContribution>>>& thread_send_buffers)
   {
     auto send_buffers = MergeThreadContributionBuffers(thread_send_buffers, "MPI_MergeOneBodyContributions_Send");
-    std::vector<OneBodyContribution> received = AlltoallvContributions(
-      send_buffers, "MPI_AlltoallvOneBodyContributions"
+    std::vector<OneBodyContribution> received;
+    if (!Enabled() || Size() <= 1)
+    {
+      received = send_buffers.empty() ? std::vector<OneBodyContribution>() : std::move(send_buffers.front());
+    }
+    else
+    {
+      received = AlltoallvContributions(
+        send_buffers, "MPI_AlltoallvOneBodyContributions"
 #ifdef IMSRG_USE_MPI
-      , GetOneBodyContributionType()
+        , GetOneBodyContributionType()
 #endif
-      );
+        );
+    }
 
     const double t_merge = omp_get_wtime();
     SortAndMergeContributions(received);
@@ -533,12 +541,20 @@ namespace imsrg_mpi
     std::vector<std::vector<std::vector<TwoBodyContribution>>>& thread_send_buffers)
   {
     auto send_buffers = MergeThreadContributionBuffers(thread_send_buffers, "MPI_MergeTwoBodyContributions_Send");
-    std::vector<TwoBodyContribution> received = AlltoallvContributions(
-      send_buffers, "MPI_AlltoallvTwoBodyContributions"
+    std::vector<TwoBodyContribution> received;
+    if (!Enabled() || Size() <= 1)
+    {
+      received = send_buffers.empty() ? std::vector<TwoBodyContribution>() : std::move(send_buffers.front());
+    }
+    else
+    {
+      received = AlltoallvContributions(
+        send_buffers, "MPI_AlltoallvTwoBodyContributions"
 #ifdef IMSRG_USE_MPI
-      , GetTwoBodyContributionType()
+        , GetTwoBodyContributionType()
 #endif
-      );
+        );
+    }
 
     const double t_merge = omp_get_wtime();
     SortAndMergeContributions(received);

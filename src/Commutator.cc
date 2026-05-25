@@ -51,6 +51,9 @@ namespace Commutator
     void comm122_event(const Operator& X, const Operator& Y, Operator& Z);
     void comm222_pp_hh_event(const Operator& X, const Operator& Y, Operator& Z);
     void comm222_ph_event(const Operator& X, const Operator& Y, Operator& Z);
+    void BuildScalarMppMhhEvent(const Operator& X, const Operator& Y, const Operator& Z, TwoBodyME& Mpp, TwoBodyME& Mhh);
+    void EmitMppMhhTwoBodyEvent(const Operator& X, const Operator& Y, Operator& Z, const TwoBodyME& Mpp, const TwoBodyME& Mhh);
+    void EmitMppMhhOneBodyEvent(const Operator& X, const Operator& Y, Operator& Z, const TwoBodyME& Mpp, const TwoBodyME& Mhh);
     std::vector<std::array<std::size_t, 2>> ScalarTwoBodyKeys(ModelSpace& modelspace);
   }
 
@@ -426,10 +429,16 @@ namespace Commutator
       if (comm_term_on["comm122ss"])
         EventIMSRG2::comm122_event(X_work, Y_work, Z);
 
-      if (comm_term_on["comm222_pp_hhss"])
-        EventIMSRG2::comm222_pp_hh_event(X_work, Y_work, Z);
-      if (comm_term_on["comm221ss"])
-        EventIMSRG2::comm221_event(X_work, Y_work, Z);
+      if (comm_term_on["comm222_pp_hhss"] || comm_term_on["comm221ss"])
+      {
+        TwoBodyME Mpp;
+        TwoBodyME Mhh;
+        EventIMSRG2::BuildScalarMppMhhEvent(X_work, Y_work, Z, Mpp, Mhh);
+        if (comm_term_on["comm222_pp_hhss"])
+          EventIMSRG2::EmitMppMhhTwoBodyEvent(X_work, Y_work, Z, Mpp, Mhh);
+        if (comm_term_on["comm221ss"])
+          EventIMSRG2::EmitMppMhhOneBodyEvent(X_work, Y_work, Z, Mpp, Mhh);
+      }
 
       if (comm_term_on["comm222_phss"])
         EventIMSRG2::comm222_ph_event(X_work, Y_work, Z);
