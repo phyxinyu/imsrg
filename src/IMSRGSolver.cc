@@ -3,12 +3,15 @@
 #include "BCH.hh"
 #include "Operator.hh"
 #include "MpiSupport.hh"
+#include "StochasticEventIMSRG2.hh"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <sstream>
+#include <stdexcept>
 
 #ifndef NO_ODE
 #include <boost/numeric/odeint.hpp>
@@ -32,6 +35,8 @@ IMSRGSolver::IMSRGSolver()
     : s(0), ds(0.1), ds_max(0.5),
       norm_domega(0.1), omega_norm_max(2.0), eta_criterion(1e-6), method("magnus_euler"),
       flowfile(""), n_omega_written(0), max_omega_written(500), magnus_adaptive(true), hunter_gatherer(false), perturbative_triples(false),
+      stochastic_hamiltonian_walkers(false), stochastic_spawn_flow(false), stochastic_hamiltonian_initialized(false),
+      stochastic_initial_walkers(0), stochastic_seed(0),
       /*pert_triples_this_omega(0),pert_triples_sum(0),*/ ode_monitor(*this), ode_mode("H"), ode_e_abs(1e-6), ode_e_rel(1e-6)
 {
 }
@@ -42,6 +47,8 @@ IMSRGSolver::IMSRGSolver(Operator &H_in)
       istep(0), s(0), ds(0.1), ds_max(0.5),
       smax(2.0), norm_domega(0.1), omega_norm_max(2.0), eta_criterion(1e-6), method("magnus_euler"),
       flowfile(""), n_omega_written(0), max_omega_written(500), magnus_adaptive(true), hunter_gatherer(false), perturbative_triples(false),
+      stochastic_hamiltonian_walkers(false), stochastic_spawn_flow(false), stochastic_hamiltonian_initialized(false),
+      stochastic_initial_walkers(0), stochastic_seed(0),
       /*pert_triples_this_omega(0),pert_triples_sum(0),*/ ode_monitor(*this), ode_mode("H"), ode_e_abs(1e-6), ode_e_rel(1e-6)
 {
   Eta.Erase();
@@ -212,11 +219,92 @@ void IMSRGSolver::SetFlowFile(std::string str)
   }
 }
 
+void IMSRGSolver::EnableStochasticHamiltonianWalkers(std::uint64_t nwalkers, std::uint64_t seed)
+{
+  stochastic_hamiltonian_walkers = true;
+  stochastic_spawn_flow = false;
+  stochastic_hamiltonian_initialized = false;
+  stochastic_initial_walkers = nwalkers;
+  stochastic_seed = seed;
+}
+
+void IMSRGSolver::EnableStochasticSpawnFlow(std::uint64_t nwalkers, std::uint64_t seed)
+{
+  stochastic_hamiltonian_walkers = false;
+  stochastic_spawn_flow = true;
+  stochastic_hamiltonian_initialized = false;
+  stochastic_initial_walkers = nwalkers;
+  stochastic_seed = seed;
+}
+
+void IMSRGSolver::InitializeStochasticHamiltonianWalkers()
+{
+  if (!stochastic_hamiltonian_walkers && !stochastic_spawn_flow)
+    return;
+  if (stochastic_hamiltonian_initialized)
+    return;
+  if (stochastic_initial_walkers == 0)
+  {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("stochastic_imsrg_initial_walkers must be positive.");
+    throw std::runtime_error("stochastic_imsrg_initial_walkers must be positive.");
+  }
+
+  if (stochastic_hamiltonian_walkers && method != "magnus_euler" && method != "magnus")
+  {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("imsrg_flow_backend=stochastic_walkers currently requires method=magnus_euler or method=magnus.");
+    throw std::runtime_error("imsrg_flow_backend=stochastic_walkers currently requires method=magnus_euler or method=magnus.");
+  }
+  if (stochastic_spawn_flow && method != "stochastic_flow_euler")
+  {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("imsrg_flow_backend=stochastic_spawn requires method=stochastic_flow_euler.");
+    throw std::runtime_error("imsrg_flow_backend=stochastic_spawn requires method=stochastic_flow_euler.");
+  }
+  if (stochastic_hamiltonian_walkers && hunter_gatherer)
+  {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("imsrg_flow_backend=stochastic_walkers currently requires hunter_gatherer=false.");
+    throw std::runtime_error("imsrg_flow_backend=stochastic_walkers currently requires hunter_gatherer=false.");
+  }
+
+  stochastic_hamiltonian_state.InitializeFromOperator(FlowingOps[0], stochastic_initial_walkers, stochastic_seed);
+  stochastic_hamiltonian_state.ReconstructInto(FlowingOps[0], FlowingOps[0].ZeroBody);
+
+  if (stochastic_hamiltonian_walkers)
+  {
+    stochastic_H0 = std::make_shared<Operator>(FlowingOps[0]);
+    H_0 = stochastic_H0.get();
+    H_saved = *H_0;
+  }
+
+  stochastic_hamiltonian_initialized = true;
+  const std::uint64_t total_abs_walkers = stochastic_hamiltonian_state.TotalAbsWalkerCount();
+  if (imsrg_mpi::IsRoot())
+  {
+    std::cout << "Initialized stochastic Hamiltonian walkers: quantum="
+              << stochastic_hamiltonian_state.quantum
+              << " requested_walkers=" << stochastic_initial_walkers
+              << " current_abs_walkers=" << total_abs_walkers
+              << std::endl;
+  }
+}
+
+void IMSRGSolver::ProjectFlowingHamiltonianToStochasticWalkers()
+{
+  if (!stochastic_hamiltonian_walkers)
+    return;
+  const double zero_body = FlowingOps[0].ZeroBody;
+  stochastic_hamiltonian_state.ProjectFromOperator(FlowingOps[0], istep);
+  stochastic_hamiltonian_state.ReconstructInto(FlowingOps[0], zero_body);
+}
+
 void IMSRGSolver::Solve()
 {
-  if (imsrg_mpi::Enabled() && !(method == "magnus_euler" or method == "magnus"))
+  if (imsrg_mpi::Enabled() && !(method == "magnus_euler" or method == "magnus" or method == "stochastic_flow_euler"))
   {
-    imsrg_mpi::Abort("MPI IMSRG(2) currently supports method=magnus or method=magnus_euler only.");
+    imsrg_mpi::Abort("MPI IMSRG(2) currently supports method=magnus, method=magnus_euler, or method=stochastic_flow_euler only.");
   }
 
   if (s < 1e-4)
@@ -236,6 +324,8 @@ void IMSRGSolver::Solve()
     Solve_ode();
   else if (method == "flow_RK4")
     Solve_flow_RK4();
+  else if (method == "stochastic_flow_euler")
+    Solve_stochastic_flow_euler();
   else if (method == "restore_4th_order")
   {
     FlowingOps.emplace_back(Operator(*(FlowingOps[0].GetModelSpace()), 0, 0, 0, 1));
@@ -260,6 +350,7 @@ void IMSRGSolver::Solve_magnus_euler()
 {
   istep = 0;
 
+  InitializeStochasticHamiltonianWalkers();
   generator.Update(FlowingOps[0], Eta);
   // Eta.PrintTwoBody();
   // SRS noticed this on June 12 2024. If these two parameters are equal, and especially if we're using the hunter-gatherer mode, then we become sensitive to
@@ -328,6 +419,7 @@ void IMSRGSolver::Solve_magnus_euler()
     {
       FlowingOps[0] = BCH::BCH_Transform(H_saved, Omega.back());
     }
+    ProjectFlowingHamiltonianToStochasticWalkers();
 
     if (norm_eta < 1.0 and generator.GetType() == "shell-model-atan")
     {
@@ -655,6 +747,68 @@ void IMSRGSolver::Solve_flow_RK4()
     WriteFlowStatus(flowfile);
     WriteFlowStatus(std::cout);
     //      profiler.PrintMemory();
+    Elast = FlowingOps[0].ZeroBody;
+  }
+}
+
+void IMSRGSolver::Solve_stochastic_flow_euler()
+{
+  if (!stochastic_spawn_flow)
+  {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort("method=stochastic_flow_euler requires imsrg_flow_backend=stochastic_spawn.");
+    throw std::runtime_error("method=stochastic_flow_euler requires imsrg_flow_backend=stochastic_spawn.");
+  }
+
+  istep = 0;
+  InitializeStochasticHamiltonianWalkers();
+  generator.Update(FlowingOps[0], Eta);
+
+  if (generator.GetType() == "shell-model-atan")
+    generator.SetDenominatorCutoff(1.0);
+
+  Elast = FlowingOps[0].ZeroBody;
+  cumulative_error = 0;
+  WriteFlowStatus(flowfile);
+  WriteFlowStatus(std::cout);
+
+  for (istep = 1; s < smax; ++istep)
+  {
+    const double norm_eta = imsrg_mpi::Norm(Eta);
+    if (norm_eta < eta_criterion)
+      break;
+    if (norm_eta > 1e12 || std::abs(Elast) > 1e9)
+    {
+      std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
+      std::cout << "!!!!!!!!!!!  Norm of eta is " << norm_eta << " E0 = " << Elast
+                << "  things are clearly broken. Giving up." << std::endl;
+      std::cout << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
+      FlowingOps[0] *= 1.0 / 0.0;
+      break;
+    }
+
+    const double step_size = std::min({ds, ds_max, smax - s});
+    if (!(step_size > 0.0))
+      break;
+    s += step_size;
+
+    const double dEds = StochasticEventIMSRG2::SpawnIMSRG2Delta(
+        Eta, FlowingOps[0], stochastic_hamiltonian_state, step_size, istep);
+    const double zero_body = FlowingOps[0].ZeroBody + step_size * dEds;
+    stochastic_hamiltonian_state.ReconstructInto(FlowingOps[0], zero_body);
+
+    if (norm_eta < 1.0 && generator.GetType() == "shell-model-atan")
+      generator.SetDenominatorCutoff(1e-6);
+
+    generator.Update(FlowingOps[0], Eta);
+
+    IMSRGProfiler::counter["StochasticIMSRG_TotalAbsWalkers"] =
+        static_cast<int>(std::min<std::uint64_t>(
+            stochastic_hamiltonian_state.TotalAbsWalkerCount(),
+            static_cast<std::uint64_t>(std::numeric_limits<int>::max())));
+
+    WriteFlowStatus(flowfile);
+    WriteFlowStatus(std::cout);
     Elast = FlowingOps[0].ZeroBody;
   }
 }
@@ -1263,6 +1417,18 @@ void IMSRGSolver::WriteFlowStatus(std::ostream &f)
   double eta_two_body_norm = imsrg_mpi::TwoBodyNorm(Eta);
   double eta_three_body_norm = imsrg_mpi::ThreeBodyNorm(Eta);
   double mp2_energy = imsrg_mpi::MP2Energy(H_s);
+  double walker_abs = 0.0;
+  double walker_one_body_targets = 0.0;
+  double walker_two_body_targets = 0.0;
+  if (stochastic_hamiltonian_initialized)
+  {
+    walker_abs = static_cast<double>(stochastic_hamiltonian_state.TotalAbsWalkerCount());
+    walker_one_body_targets = static_cast<double>(stochastic_hamiltonian_state.one_body.size());
+    walker_two_body_targets = static_cast<double>(stochastic_hamiltonian_state.two_body.size());
+  }
+  imsrg_mpi::AllreduceInPlace(walker_abs);
+  imsrg_mpi::AllreduceInPlace(walker_one_body_targets);
+  imsrg_mpi::AllreduceInPlace(walker_two_body_targets);
   if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
   {
     return;
@@ -1286,6 +1452,9 @@ void IMSRGSolver::WriteFlowStatus(std::ostream &f)
       << std::setw(7) << std::setprecision(0) << profiler.counter["N_ScalarCommutators"] + profiler.counter["N_TensorCommutators"]
       << std::setw(fwidth) << std::setprecision(fprecision) << mp2_energy
       << std::setw(7) << std::setprecision(0) << profiler.counter["N_Operators"]
+      << std::setw(16) << std::setprecision(0) << walker_abs
+      << std::setw(10) << std::setprecision(0) << walker_one_body_targets
+      << std::setw(10) << std::setprecision(0) << walker_two_body_targets
       << std::setprecision(fprecision)
       << std::setw(12) << std::setprecision(3) << profiler.GetTimes()["real"]
       << std::setw(12) << std::setprecision(3) << profiler.CheckMem()["RSS"] / 1024. << " / " << std::skipws << profiler.MaxMemUsage() / 1024. << std::fixed
@@ -1328,10 +1497,13 @@ void IMSRGSolver::WriteFlowStatusHeader(std::ostream &f)
       << std::setw(7) << std::setprecision(fprecision) << "Ncomm"
       << std::setw(16) << std::setprecision(fprecision) << "E(MP2)"
       << std::setw(7) << std::setprecision(fprecision) << "N_Ops"
+      << std::setw(16) << std::setprecision(fprecision) << "W_abs"
+      << std::setw(10) << std::setprecision(fprecision) << "W1_tgt"
+      << std::setw(10) << std::setprecision(fprecision) << "W2_tgt"
       << std::setw(16) << std::setprecision(fprecision) << "Walltime (s)"
       << std::setw(19) << std::setprecision(fprecision) << "Memory (MB)"
       << std::endl;
-    for (int x = 0; x < 175; x++)
+    for (int x = 0; x < 211; x++)
       f << "-";
     f << std::endl;
   }

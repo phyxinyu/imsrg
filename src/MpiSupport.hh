@@ -8,6 +8,7 @@
 #include <armadillo>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -58,12 +59,33 @@ namespace imsrg_mpi
     double value;
   };
 
+  struct OneBodyDeltaContribution
+  {
+    int i;
+    int j;
+    std::int64_t delta_count;
+  };
+
+  struct TwoBodyDeltaContribution
+  {
+    int ch_bra;
+    int ch_ket;
+    int ibra;
+    int iket;
+    std::int64_t delta_count;
+  };
+
   void ExchangeAndApplyOneBodyContributions(
     Operator& op,
     std::vector<std::vector<std::vector<OneBodyContribution>>>& thread_send_buffers);
   void ExchangeAndApplyTwoBodyContributions(
     Operator& op,
     std::vector<std::vector<std::vector<TwoBodyContribution>>>& thread_send_buffers);
+
+  std::vector<OneBodyDeltaContribution> ExchangeOneBodyDeltaContributions(
+    std::vector<std::vector<std::vector<OneBodyDeltaContribution>>>& thread_send_buffers);
+  std::vector<TwoBodyDeltaContribution> ExchangeTwoBodyDeltaContributions(
+    std::vector<std::vector<std::vector<TwoBodyDeltaContribution>>>& thread_send_buffers);
 
   void AllreduceInPlace(double& value);
   void AllreduceInPlace(arma::mat& matrix);

@@ -83,6 +83,8 @@ std::map<std::string,std::string> Parameters::string_par = {
   {"write_omega",		"false"},	// write omega to disk
   {"mpi_imsrg2",		"false"},	// use experimental MPI implementation for scalar IMSRG(2)
   {"imsrg2_commutator_backend", "matrix"},      // matrix or event backend for scalar IMSRG(2) commutators
+  {"imsrg_flow_backend",	"deterministic"}, // deterministic, stochastic_walkers, or stochastic_spawn
+  {"stochastic_imsrg_quantum",	"fixed"},      // v1 stochastic IMSRG supports fixed quantum only
   {"nucleon_mass_correction",	"false"},	// include effect of proton-neutron mass splitting
   {"hunter_gatherer",	        "false"},	// use hunter-gatherer approach to splitting omega
   {"relativistic_correction",   "false"},       // include the p^4 relativistic correction to the kinetic energy
@@ -146,6 +148,8 @@ std::map<std::string,int> Parameters::int_par = {
   {"e2max_imsrg",       -1}, // e2max for imsrg part. defaults to 2*emax_imsrg
   {"e3max_imsrg",       -1}, // e3max for imsrg part. defaults to min(e3max,3*emax_imsrg)
   {"emax_3body_imsrg",        -1}, // emax truncation for the 3-body operators in the imsrg part (default: emax_imsrg)
+  {"stochastic_imsrg_initial_walkers", 100000},
+  {"stochastic_imsrg_seed", 5489},
 };
 
 std::map<std::string,std::vector<std::string>> Parameters::vec_par = {

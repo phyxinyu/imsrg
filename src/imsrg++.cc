@@ -52,6 +52,7 @@
 #include <fstream>
 #include <stdio.h>
 #include <string>
+#include <cstdint>
 #include <sys/resource.h>
 #include <omp.h>
 #include "IMSRG.hh"
@@ -174,6 +175,8 @@ int main(int argc, char** argv)
   bool write_omega = parameters.s("write_omega") == "true";
   bool mpi_imsrg2 = parameters.s("mpi_imsrg2") == "true";
   std::string imsrg2_commutator_backend = parameters.s("imsrg2_commutator_backend");
+  std::string imsrg_flow_backend = parameters.s("imsrg_flow_backend");
+  std::string stochastic_imsrg_quantum = parameters.s("stochastic_imsrg_quantum");
   bool freeze_occupations = parameters.s("freeze_occupations")=="true";
   bool discard_no2b_from_3n = parameters.s("discard_no2b_from_3n")=="true";
   bool hunter_gatherer = parameters.s("hunter_gatherer") == "true";
@@ -216,6 +219,8 @@ int main(int argc, char** argv)
   int e2Max_imsrg = parameters.i("e2max_imsrg");
   int e3Max_imsrg = parameters.i("e3max_imsrg");
   int eMax_3body_imsrg = parameters.i("emax_3body_imsrg");
+  int stochastic_imsrg_initial_walkers = parameters.i("stochastic_imsrg_initial_walkers");
+  int stochastic_imsrg_seed = parameters.i("stochastic_imsrg_seed");
 //  if ( not ( eMax_imsrg==-1 and e2Max_imsrg==-1 and e3Max_imsrg==-1 ) )
 //  {
 //    if ( eMax_imsrg==-1 ) eMax_imsrg = eMax;
@@ -250,12 +255,60 @@ int main(int argc, char** argv)
   std::vector<Operator> ops;
   std::vector<std::string> spwf = parameters.v("SPWF");
 
+  auto fail_input = [](const std::string& message) {
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort(message);
+    std::cerr << message << std::endl;
+    std::exit(EXIT_FAILURE);
+  };
+
+  if (imsrg_flow_backend != "deterministic" &&
+      imsrg_flow_backend != "stochastic_walkers" &&
+      imsrg_flow_backend != "stochastic_spawn")
+  {
+    fail_input("imsrg_flow_backend must be deterministic, stochastic_walkers, or stochastic_spawn.");
+  }
+  if ((imsrg_flow_backend == "stochastic_walkers" || imsrg_flow_backend == "stochastic_spawn") &&
+      stochastic_imsrg_quantum != "fixed")
+  {
+    fail_input("stochastic_imsrg_quantum currently only supports fixed.");
+  }
+  if ((imsrg_flow_backend == "stochastic_walkers" || imsrg_flow_backend == "stochastic_spawn") &&
+      stochastic_imsrg_initial_walkers <= 0)
+  {
+    fail_input("stochastic_imsrg_initial_walkers must be positive.");
+  }
+  if (imsrg_flow_backend == "stochastic_walkers" && !(method == "magnus_euler" || method == "magnus"))
+  {
+    fail_input("imsrg_flow_backend=stochastic_walkers currently requires method=magnus_euler or method=magnus.");
+  }
+  if (imsrg_flow_backend == "stochastic_spawn" && method != "stochastic_flow_euler")
+  {
+    fail_input("imsrg_flow_backend=stochastic_spawn requires method=stochastic_flow_euler.");
+  }
+  if (method == "stochastic_flow_euler" && imsrg_flow_backend != "stochastic_spawn")
+  {
+    fail_input("method=stochastic_flow_euler requires imsrg_flow_backend=stochastic_spawn.");
+  }
+  if (imsrg_flow_backend == "stochastic_spawn")
+  {
+    if (IMSRG3 || imsrg3_at_end || perturbative_triples)
+      fail_input("imsrg_flow_backend=stochastic_spawn requires IMSRG3=false, imsrg3_at_end=false, and perturbative_triples=false.");
+    if (hunter_gatherer)
+      fail_input("imsrg_flow_backend=stochastic_spawn requires hunter_gatherer=false.");
+    if (write_omega || scratch != "")
+      fail_input("imsrg_flow_backend=stochastic_spawn requires write_omega=false and scratch=\"\".");
+    if (!opnames.empty() || !opsfromfile.empty() || !opnamesPT1.empty() ||
+        !opnamesRPA.empty() || !opnamesTDA.empty() || write_HO_ops || write_HF_ops)
+      fail_input("imsrg_flow_backend=stochastic_spawn currently supports Hamiltonian flow only, not external operator transforms.");
+  }
+
   if (imsrg_mpi::Enabled())
   {
     if (IMSRG3 || imsrg3_at_end || perturbative_triples)
       imsrg_mpi::Abort("mpi_imsrg2=true currently requires IMSRG3=false, imsrg3_at_end=false, perturbative_triples=false.");
-    if (!(method == "magnus" || method == "magnus_euler"))
-      imsrg_mpi::Abort("mpi_imsrg2=true currently supports method=magnus or method=magnus_euler only.");
+    if (!(method == "magnus" || method == "magnus_euler" || method == "stochastic_flow_euler"))
+      imsrg_mpi::Abort("mpi_imsrg2=true currently supports method=magnus, method=magnus_euler, or method=stochastic_flow_euler only.");
     if (write_omega || scratch != "")
       imsrg_mpi::Abort("mpi_imsrg2=true currently requires write_omega=false and scratch=\"\".");
     if (!opnames.empty() || !opsfromfile.empty() || !opnamesPT1.empty() ||
@@ -1145,6 +1198,18 @@ int main(int argc, char** argv)
   imsrgsolver.SetODETolerance(ode_tolerance);
   if (denominator_delta_orbit != "none")
     imsrgsolver.SetDenominatorDeltaOrbit(denominator_delta_orbit);
+  if (imsrg_flow_backend == "stochastic_walkers")
+  {
+    imsrgsolver.EnableStochasticHamiltonianWalkers(
+        static_cast<std::uint64_t>(stochastic_imsrg_initial_walkers),
+        static_cast<std::uint64_t>(stochastic_imsrg_seed));
+  }
+  else if (imsrg_flow_backend == "stochastic_spawn")
+  {
+    imsrgsolver.EnableStochasticSpawnFlow(
+        static_cast<std::uint64_t>(stochastic_imsrg_initial_walkers),
+        static_cast<std::uint64_t>(stochastic_imsrg_seed));
+  }
 
   BCH::SetUseBruecknerBCH(use_brueckner_bch);
   Commutator::SetUseIMSRG3(IMSRG3);

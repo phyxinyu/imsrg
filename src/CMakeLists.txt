@@ -388,6 +388,36 @@ if(IMSRG_USE_MPI)
 endif()
 
 add_library(
+    StochasticOperatorWalkers
+    StochasticOperatorWalkers.hh StochasticOperatorWalkers.cc
+)
+target_link_libraries(
+    StochasticOperatorWalkers
+    PUBLIC
+    Operator
+    MpiSupport
+    IMSRGProfiler
+    PRIVATE
+    OpenMP::OpenMP_CXX
+)
+
+add_library(
+    StochasticEventIMSRG2
+    StochasticEventIMSRG2.hh StochasticEventIMSRG2.cc
+)
+target_link_libraries(
+    StochasticEventIMSRG2
+    PUBLIC
+    Operator
+    StochasticOperatorWalkers
+    MpiSupport
+    PRIVATE
+    Commutator
+    PhysicalConstants
+    OpenMP::OpenMP_CXX
+)
+
+add_library(
     Version
     version.hh
     ${CMAKE_CURRENT_BINARY_DIR}/version.cc
@@ -448,9 +478,11 @@ target_link_libraries(
     IMSRGProfiler
     ReadWrite
     MpiSupport
+    StochasticOperatorWalkers
     PRIVATE
     BCH
     Commutator
+    StochasticEventIMSRG2
     Boost::boost
 )
 
@@ -811,6 +843,8 @@ add_library(
     PhysicalConstants
     RPA
     MpiSupport
+    StochasticOperatorWalkers
+    StochasticEventIMSRG2
 )
 target_link_libraries(
     IMSRG
@@ -836,6 +870,8 @@ target_link_libraries(
     PhysicalConstants
     RPA
     MpiSupport
+    StochasticOperatorWalkers
+    StochasticEventIMSRG2
     BLAS::BLAS
     LAPACK::LAPACK
 )

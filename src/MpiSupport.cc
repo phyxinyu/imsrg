@@ -161,6 +161,32 @@ namespace
            lhs.ibra == rhs.ibra && lhs.iket == rhs.iket;
   }
 
+  bool ContributionKeyLess(const imsrg_mpi::OneBodyDeltaContribution& lhs,
+                           const imsrg_mpi::OneBodyDeltaContribution& rhs)
+  {
+    return std::tie(lhs.i, lhs.j) < std::tie(rhs.i, rhs.j);
+  }
+
+  bool ContributionKeyEqual(const imsrg_mpi::OneBodyDeltaContribution& lhs,
+                            const imsrg_mpi::OneBodyDeltaContribution& rhs)
+  {
+    return lhs.i == rhs.i && lhs.j == rhs.j;
+  }
+
+  bool ContributionKeyLess(const imsrg_mpi::TwoBodyDeltaContribution& lhs,
+                           const imsrg_mpi::TwoBodyDeltaContribution& rhs)
+  {
+    return std::tie(lhs.ch_bra, lhs.ch_ket, lhs.ibra, lhs.iket) <
+           std::tie(rhs.ch_bra, rhs.ch_ket, rhs.ibra, rhs.iket);
+  }
+
+  bool ContributionKeyEqual(const imsrg_mpi::TwoBodyDeltaContribution& lhs,
+                            const imsrg_mpi::TwoBodyDeltaContribution& rhs)
+  {
+    return lhs.ch_bra == rhs.ch_bra && lhs.ch_ket == rhs.ch_ket &&
+           lhs.ibra == rhs.ibra && lhs.iket == rhs.iket;
+  }
+
   template <typename Contribution>
   void SortAndMergeContributions(std::vector<Contribution>& contributions)
   {
@@ -193,6 +219,33 @@ namespace
   }
 
   template <typename Contribution>
+  void SortAndMergeDeltaContributions(std::vector<Contribution>& contributions)
+  {
+    std::sort(contributions.begin(), contributions.end(),
+              [](const Contribution& lhs, const Contribution& rhs) {
+                return ContributionKeyLess(lhs, rhs);
+              });
+    std::vector<Contribution> merged;
+    merged.reserve(contributions.size());
+    for (std::size_t i = 0; i < contributions.size();)
+    {
+      Contribution accum = contributions[i];
+      std::int64_t sum = 0;
+      std::size_t j = i;
+      while (j < contributions.size() && ContributionKeyEqual(contributions[i], contributions[j]))
+      {
+        sum += contributions[j].delta_count;
+        ++j;
+      }
+      accum.delta_count = sum;
+      if (accum.delta_count != 0)
+        merged.push_back(accum);
+      i = j;
+    }
+    contributions.swap(merged);
+  }
+
+  template <typename Contribution>
   std::vector<std::vector<Contribution>> MergeThreadContributionBuffers(
     std::vector<std::vector<std::vector<Contribution>>>& thread_send_buffers,
     const std::string& timer_name)
@@ -218,6 +271,37 @@ namespace
         src.clear();
       }
       SortAndMergeContributions(send_buffers[rank]);
+    }
+    IMSRGProfiler::timer[timer_name] += omp_get_wtime() - t_start;
+    return send_buffers;
+  }
+
+  template <typename Contribution>
+  std::vector<std::vector<Contribution>> MergeThreadDeltaContributionBuffers(
+    std::vector<std::vector<std::vector<Contribution>>>& thread_send_buffers,
+    const std::string& timer_name)
+  {
+    const double t_start = omp_get_wtime();
+    const int nranks = imsrg_mpi::Size();
+    std::vector<std::vector<Contribution>> send_buffers(nranks);
+    for (int rank = 0; rank < nranks; ++rank)
+    {
+      std::size_t total = 0;
+      for (auto& thread_buffers : thread_send_buffers)
+        if (rank < static_cast<int>(thread_buffers.size()))
+          total += thread_buffers[rank].size();
+      send_buffers[rank].reserve(total);
+      for (auto& thread_buffers : thread_send_buffers)
+      {
+        if (rank >= static_cast<int>(thread_buffers.size()))
+          continue;
+        auto& src = thread_buffers[rank];
+        send_buffers[rank].insert(send_buffers[rank].end(),
+                                  std::make_move_iterator(src.begin()),
+                                  std::make_move_iterator(src.end()));
+        src.clear();
+      }
+      SortAndMergeDeltaContributions(send_buffers[rank]);
     }
     IMSRGProfiler::timer[timer_name] += omp_get_wtime() - t_start;
     return send_buffers;
@@ -264,6 +348,54 @@ namespace
       MPI_Get_address(&dummy.ibra, &offsets[2]);
       MPI_Get_address(&dummy.iket, &offsets[3]);
       MPI_Get_address(&dummy.value, &offsets[4]);
+      for (int i = 0; i < nblocks; ++i)
+        offsets[i] -= base;
+      MPI_Type_create_struct(nblocks, blocklengths, offsets, types, &mpi_type);
+      MPI_Type_commit(&mpi_type);
+    }
+    return mpi_type;
+  }
+
+  MPI_Datatype GetOneBodyDeltaContributionType()
+  {
+    static MPI_Datatype mpi_type = MPI_DATATYPE_NULL;
+    if (mpi_type == MPI_DATATYPE_NULL)
+    {
+      imsrg_mpi::OneBodyDeltaContribution dummy{};
+      const int nblocks = 3;
+      int blocklengths[nblocks] = {1, 1, 1};
+      MPI_Datatype types[nblocks] = {MPI_INT, MPI_INT, MPI_INT64_T};
+      MPI_Aint offsets[nblocks];
+      MPI_Aint base = 0;
+      MPI_Get_address(&dummy, &base);
+      MPI_Get_address(&dummy.i, &offsets[0]);
+      MPI_Get_address(&dummy.j, &offsets[1]);
+      MPI_Get_address(&dummy.delta_count, &offsets[2]);
+      for (int i = 0; i < nblocks; ++i)
+        offsets[i] -= base;
+      MPI_Type_create_struct(nblocks, blocklengths, offsets, types, &mpi_type);
+      MPI_Type_commit(&mpi_type);
+    }
+    return mpi_type;
+  }
+
+  MPI_Datatype GetTwoBodyDeltaContributionType()
+  {
+    static MPI_Datatype mpi_type = MPI_DATATYPE_NULL;
+    if (mpi_type == MPI_DATATYPE_NULL)
+    {
+      imsrg_mpi::TwoBodyDeltaContribution dummy{};
+      const int nblocks = 5;
+      int blocklengths[nblocks] = {1, 1, 1, 1, 1};
+      MPI_Datatype types[nblocks] = {MPI_INT, MPI_INT, MPI_INT, MPI_INT, MPI_INT64_T};
+      MPI_Aint offsets[nblocks];
+      MPI_Aint base = 0;
+      MPI_Get_address(&dummy, &base);
+      MPI_Get_address(&dummy.ch_bra, &offsets[0]);
+      MPI_Get_address(&dummy.ch_ket, &offsets[1]);
+      MPI_Get_address(&dummy.ibra, &offsets[2]);
+      MPI_Get_address(&dummy.iket, &offsets[3]);
+      MPI_Get_address(&dummy.delta_count, &offsets[4]);
       for (int i = 0; i < nblocks; ++i)
         offsets[i] -= base;
       MPI_Type_create_struct(nblocks, blocklengths, offsets, types, &mpi_type);
@@ -566,6 +698,61 @@ namespace imsrg_mpi
       op.TwoBody.AddToTBME(c.ch_bra, c.ch_ket, c.ibra, c.iket, c.value);
     }
     IMSRGProfiler::timer["MPI_MergeTwoBodyContributions_Recv"] += omp_get_wtime() - t_merge;
+  }
+
+  std::vector<OneBodyDeltaContribution> ExchangeOneBodyDeltaContributions(
+    std::vector<std::vector<std::vector<OneBodyDeltaContribution>>>& thread_send_buffers)
+  {
+    auto send_buffers = MergeThreadDeltaContributionBuffers(thread_send_buffers, "MPI_MergeOneBodyDeltaContributions_Send");
+    std::vector<OneBodyDeltaContribution> received;
+    if (!Enabled() || Size() <= 1)
+    {
+      received = send_buffers.empty() ? std::vector<OneBodyDeltaContribution>() : std::move(send_buffers.front());
+    }
+    else
+    {
+      received = AlltoallvContributions(
+        send_buffers, "MPI_AlltoallvOneBodyDeltaContributions"
+#ifdef IMSRG_USE_MPI
+        , GetOneBodyDeltaContributionType()
+#endif
+        );
+    }
+
+    const double t_merge = omp_get_wtime();
+    SortAndMergeDeltaContributions(received);
+    for (const auto& c : received)
+    {
+      if (Enabled() && Size() > 1 && c.i % Size() != Rank())
+        Abort("One-body delta contribution delivered to non-owner rank.");
+    }
+    IMSRGProfiler::timer["MPI_MergeOneBodyDeltaContributions_Recv"] += omp_get_wtime() - t_merge;
+    return received;
+  }
+
+  std::vector<TwoBodyDeltaContribution> ExchangeTwoBodyDeltaContributions(
+    std::vector<std::vector<std::vector<TwoBodyDeltaContribution>>>& thread_send_buffers)
+  {
+    auto send_buffers = MergeThreadDeltaContributionBuffers(thread_send_buffers, "MPI_MergeTwoBodyDeltaContributions_Send");
+    std::vector<TwoBodyDeltaContribution> received;
+    if (!Enabled() || Size() <= 1)
+    {
+      received = send_buffers.empty() ? std::vector<TwoBodyDeltaContribution>() : std::move(send_buffers.front());
+    }
+    else
+    {
+      received = AlltoallvContributions(
+        send_buffers, "MPI_AlltoallvTwoBodyDeltaContributions"
+#ifdef IMSRG_USE_MPI
+        , GetTwoBodyDeltaContributionType()
+#endif
+        );
+    }
+
+    const double t_merge = omp_get_wtime();
+    SortAndMergeDeltaContributions(received);
+    IMSRGProfiler::timer["MPI_MergeTwoBodyDeltaContributions_Recv"] += omp_get_wtime() - t_merge;
+    return received;
   }
 
   void AllreduceInPlace(double& value)

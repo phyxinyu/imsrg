@@ -23,11 +23,14 @@
 #include <fstream>
 #include <string>
 #include <deque>
+#include <cstdint>
+#include <memory>
 #include <vector>
 #include "Operator.hh"
 #include "Generator.hh"
 #include "IMSRGProfiler.hh"
 #include "ReadWrite.hh"
+#include "StochasticOperatorWalkers.hh"
 
 //using namespace std;
 
@@ -63,6 +66,13 @@ class IMSRGSolver
   bool magnus_adaptive;
   bool hunter_gatherer;
   bool perturbative_triples;
+  bool stochastic_hamiltonian_walkers;
+  bool stochastic_spawn_flow;
+  bool stochastic_hamiltonian_initialized;
+  std::uint64_t stochastic_initial_walkers;
+  std::uint64_t stochastic_seed;
+  stochastic_imsrg::HamiltonianWalkerState stochastic_hamiltonian_state;
+  std::shared_ptr<Operator> stochastic_H0;
 
   double Elast;
   double cumulative_error;
@@ -101,6 +111,11 @@ class IMSRGSolver
   void Solve_magnus_backoff();
   void Solve_magnus_modified_euler();
   void Solve_flow_RK4();
+  void Solve_stochastic_flow_euler();
+  void EnableStochasticHamiltonianWalkers(std::uint64_t nwalkers, std::uint64_t seed);
+  void EnableStochasticSpawnFlow(std::uint64_t nwalkers, std::uint64_t seed);
+  void InitializeStochasticHamiltonianWalkers();
+  void ProjectFlowingHamiltonianToStochasticWalkers();
 
   Operator Transform(Operator& OpIn);
   Operator Transform(Operator&& OpIn);
@@ -213,4 +228,3 @@ class IMSRGSolver
 
 
 #endif
-
