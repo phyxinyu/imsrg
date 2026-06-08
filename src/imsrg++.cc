@@ -221,6 +221,9 @@ int main(int argc, char** argv)
   int eMax_3body_imsrg = parameters.i("emax_3body_imsrg");
   int stochastic_imsrg_initial_walkers = parameters.i("stochastic_imsrg_initial_walkers");
   int stochastic_imsrg_seed = parameters.i("stochastic_imsrg_seed");
+  int stochastic_imsrg_refine_interval = parameters.i("stochastic_imsrg_refine_interval");
+  int stochastic_imsrg_max_refinements = parameters.i("stochastic_imsrg_max_refinements");
+  int stochastic_imsrg_max_walkers = parameters.i("stochastic_imsrg_max_walkers");
 //  if ( not ( eMax_imsrg==-1 and e2Max_imsrg==-1 and e3Max_imsrg==-1 ) )
 //  {
 //    if ( eMax_imsrg==-1 ) eMax_imsrg = eMax;
@@ -245,6 +248,8 @@ int main(int argc, char** argv)
   double dE3max = parameters.d("dE3max");
   double OccNat3Cut = parameters.d("OccNat3Cut");
   double threebody_threshold = parameters.d("threebody_threshold");
+  double stochastic_imsrg_refine_factor = parameters.d("stochastic_imsrg_refine_factor");
+  double stochastic_imsrg_refine_eta = parameters.d("stochastic_imsrg_refine_eta");
 
   std::vector<std::string> opnames = parameters.v("Operators");
   std::vector<std::string> opsfromfile = parameters.v("OperatorsFromFile");
@@ -268,10 +273,13 @@ int main(int argc, char** argv)
   {
     fail_input("imsrg_flow_backend must be deterministic, stochastic_walkers, or stochastic_spawn.");
   }
-  if ((imsrg_flow_backend == "stochastic_walkers" || imsrg_flow_backend == "stochastic_spawn") &&
-      stochastic_imsrg_quantum != "fixed")
+  if (stochastic_imsrg_quantum != "fixed" && stochastic_imsrg_quantum != "adaptive")
   {
-    fail_input("stochastic_imsrg_quantum currently only supports fixed.");
+    fail_input("stochastic_imsrg_quantum must be fixed or adaptive.");
+  }
+  if (imsrg_flow_backend == "stochastic_walkers" && stochastic_imsrg_quantum != "fixed")
+  {
+    fail_input("imsrg_flow_backend=stochastic_walkers currently supports stochastic_imsrg_quantum=fixed only.");
   }
   if ((imsrg_flow_backend == "stochastic_walkers" || imsrg_flow_backend == "stochastic_spawn") &&
       stochastic_imsrg_initial_walkers <= 0)
@@ -292,6 +300,16 @@ int main(int argc, char** argv)
   }
   if (imsrg_flow_backend == "stochastic_spawn")
   {
+    if (stochastic_imsrg_refine_factor <= 1.0)
+      fail_input("stochastic_imsrg_refine_factor must be greater than 1.");
+    if (stochastic_imsrg_refine_eta <= 0.0)
+      fail_input("stochastic_imsrg_refine_eta must be positive.");
+    if (stochastic_imsrg_refine_interval <= 0)
+      fail_input("stochastic_imsrg_refine_interval must be positive.");
+    if (stochastic_imsrg_max_refinements < 0)
+      fail_input("stochastic_imsrg_max_refinements must be non-negative.");
+    if (stochastic_imsrg_max_walkers < 0)
+      fail_input("stochastic_imsrg_max_walkers must be non-negative.");
     if (IMSRG3 || imsrg3_at_end || perturbative_triples)
       fail_input("imsrg_flow_backend=stochastic_spawn requires IMSRG3=false, imsrg3_at_end=false, and perturbative_triples=false.");
     if (hunter_gatherer)
@@ -1209,6 +1227,13 @@ int main(int argc, char** argv)
     imsrgsolver.EnableStochasticSpawnFlow(
         static_cast<std::uint64_t>(stochastic_imsrg_initial_walkers),
         static_cast<std::uint64_t>(stochastic_imsrg_seed));
+    imsrgsolver.SetStochasticQuantumMode(stochastic_imsrg_quantum);
+    imsrgsolver.SetStochasticQuantumRefinement(
+        stochastic_imsrg_refine_factor,
+        stochastic_imsrg_refine_eta,
+        stochastic_imsrg_refine_interval,
+        stochastic_imsrg_max_refinements,
+        static_cast<std::uint64_t>(stochastic_imsrg_max_walkers));
   }
 
   BCH::SetUseBruecknerBCH(use_brueckner_bch);

@@ -13,6 +13,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <omp.h>
+
 #ifndef NO_ODE
 #include <boost/numeric/odeint.hpp>
 #endif
@@ -37,6 +39,8 @@ IMSRGSolver::IMSRGSolver()
       flowfile(""), n_omega_written(0), max_omega_written(500), magnus_adaptive(true), hunter_gatherer(false), perturbative_triples(false),
       stochastic_hamiltonian_walkers(false), stochastic_spawn_flow(false), stochastic_hamiltonian_initialized(false),
       stochastic_initial_walkers(0), stochastic_seed(0),
+      stochastic_adaptive_quantum(false), stochastic_refine_factor(10.0), stochastic_refine_eta(1e-2),
+      stochastic_refine_interval(10), stochastic_max_refinements(2), stochastic_max_walkers(0),
       /*pert_triples_this_omega(0),pert_triples_sum(0),*/ ode_monitor(*this), ode_mode("H"), ode_e_abs(1e-6), ode_e_rel(1e-6)
 {
 }
@@ -49,6 +53,8 @@ IMSRGSolver::IMSRGSolver(Operator &H_in)
       flowfile(""), n_omega_written(0), max_omega_written(500), magnus_adaptive(true), hunter_gatherer(false), perturbative_triples(false),
       stochastic_hamiltonian_walkers(false), stochastic_spawn_flow(false), stochastic_hamiltonian_initialized(false),
       stochastic_initial_walkers(0), stochastic_seed(0),
+      stochastic_adaptive_quantum(false), stochastic_refine_factor(10.0), stochastic_refine_eta(1e-2),
+      stochastic_refine_interval(10), stochastic_max_refinements(2), stochastic_max_walkers(0),
       /*pert_triples_this_omega(0),pert_triples_sum(0),*/ ode_monitor(*this), ode_mode("H"), ode_e_abs(1e-6), ode_e_rel(1e-6)
 {
   Eta.Erase();
@@ -237,6 +243,45 @@ void IMSRGSolver::EnableStochasticSpawnFlow(std::uint64_t nwalkers, std::uint64_
   stochastic_seed = seed;
 }
 
+void IMSRGSolver::SetStochasticQuantumMode(std::string mode)
+{
+  if (mode == "fixed")
+  {
+    stochastic_adaptive_quantum = false;
+    return;
+  }
+  if (mode == "adaptive")
+  {
+    stochastic_adaptive_quantum = true;
+    return;
+  }
+
+  const std::string message = "stochastic_imsrg_quantum must be fixed or adaptive.";
+  if (imsrg_mpi::Enabled())
+    imsrg_mpi::Abort(message);
+  throw std::runtime_error(message);
+}
+
+void IMSRGSolver::SetStochasticQuantumRefinement(double factor, double eta,
+                                                  int interval, int max_refinements,
+                                                  std::uint64_t max_walkers)
+{
+  if (!(factor > 1.0) || !(eta > 0.0) || interval <= 0 || max_refinements < 0)
+  {
+    const std::string message =
+        "invalid stochastic quantum refinement parameters: factor>1, eta>0, interval>0, max_refinements>=0 are required.";
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort(message);
+    throw std::runtime_error(message);
+  }
+
+  stochastic_refine_factor = factor;
+  stochastic_refine_eta = eta;
+  stochastic_refine_interval = interval;
+  stochastic_max_refinements = max_refinements;
+  stochastic_max_walkers = max_walkers;
+}
+
 void IMSRGSolver::InitializeStochasticHamiltonianWalkers()
 {
   if (!stochastic_hamiltonian_walkers && !stochastic_spawn_flow)
@@ -298,6 +343,77 @@ void IMSRGSolver::ProjectFlowingHamiltonianToStochasticWalkers()
   const double zero_body = FlowingOps[0].ZeroBody;
   stochastic_hamiltonian_state.ProjectFromOperator(FlowingOps[0], istep);
   stochastic_hamiltonian_state.ReconstructInto(FlowingOps[0], zero_body);
+}
+
+void IMSRGSolver::MaybeRefineStochasticQuantum()
+{
+  if (!stochastic_spawn_flow || !stochastic_adaptive_quantum || !stochastic_hamiltonian_initialized)
+    return;
+
+  auto& state = stochastic_hamiltonian_state;
+  if (state.refinement_count >= stochastic_max_refinements)
+    return;
+  if (state.refinement_count > 0 &&
+      istep - state.last_refine_step < stochastic_refine_interval)
+    return;
+
+  const double norm_eta = imsrg_mpi::Norm(Eta);
+  const double threshold = stochastic_refine_eta /
+                           std::pow(stochastic_refine_factor, state.refinement_count);
+  if (!(norm_eta < threshold))
+    return;
+
+  const double current_l1 = state.CurrentIndependentOneTwoBodyL1(FlowingOps[0]);
+  if (!(current_l1 > 0.0))
+  {
+    IMSRGProfiler::counter["StochasticIMSRG_QuantumRefinementSkipped"] += 1;
+    return;
+  }
+
+  double target_walkers = static_cast<double>(stochastic_initial_walkers) *
+                          std::pow(stochastic_refine_factor, state.refinement_count + 1);
+  if (stochastic_max_walkers > 0)
+    target_walkers = std::min(target_walkers, static_cast<double>(stochastic_max_walkers));
+  target_walkers = std::max(1.0, target_walkers);
+
+  const double old_quantum = state.quantum;
+  const double quantum_target = current_l1 / target_walkers;
+  const double quantum_step_limit = old_quantum / stochastic_refine_factor;
+  const double new_quantum = std::max(quantum_target, quantum_step_limit);
+  if (!(new_quantum > 0.0) || !(new_quantum < old_quantum))
+  {
+    IMSRGProfiler::counter["StochasticIMSRG_QuantumRefinementSkipped"] += 1;
+    return;
+  }
+
+  const double t_start = omp_get_wtime();
+  const std::uint64_t walkers_before = state.TotalAbsWalkerCount();
+  const int refine_step_key = 1000000000 + 1000000 * state.refinement_count + istep;
+  state.RefineQuantumFromOperator(FlowingOps[0], new_quantum, refine_step_key);
+  state.refinement_count += 1;
+  state.last_refine_step = istep;
+  state.ReconstructInto(FlowingOps[0], FlowingOps[0].ZeroBody);
+  generator.Update(FlowingOps[0], Eta);
+  const std::uint64_t walkers_after = state.TotalAbsWalkerCount();
+
+  IMSRGProfiler::counter["StochasticIMSRG_QuantumRefinements"] += 1;
+  IMSRGProfiler::counter["StochasticIMSRG_QuantumRefinementTargetWalkers"] =
+      static_cast<int>(std::min(target_walkers, static_cast<double>(std::numeric_limits<int>::max())));
+  IMSRGProfiler::timer["StochasticIMSRG_QuantumRefinement"] += omp_get_wtime() - t_start;
+
+  if (imsrg_mpi::IsRoot())
+  {
+    std::ostringstream message;
+    message << std::setprecision(12)
+            << "Refined stochastic quantum: step=" << istep
+            << " s=" << s
+            << " old=" << old_quantum
+            << " new=" << state.quantum
+            << " target_walkers=" << static_cast<std::uint64_t>(std::llround(target_walkers))
+            << " W_abs_before=" << walkers_before
+            << " W_abs_after=" << walkers_after;
+    std::cout << message.str() << std::endl;
+  }
 }
 
 void IMSRGSolver::Solve()
@@ -801,6 +917,7 @@ void IMSRGSolver::Solve_stochastic_flow_euler()
       generator.SetDenominatorCutoff(1e-6);
 
     generator.Update(FlowingOps[0], Eta);
+    MaybeRefineStochasticQuantum();
 
     IMSRGProfiler::counter["StochasticIMSRG_TotalAbsWalkers"] =
         static_cast<int>(std::min<std::uint64_t>(
@@ -1420,13 +1537,16 @@ void IMSRGSolver::WriteFlowStatus(std::ostream &f)
   double walker_abs = 0.0;
   double walker_one_body_targets = 0.0;
   double walker_two_body_targets = 0.0;
+  double walker_quantum = 0.0;
+  int walker_refinement_count = 0;
   if (stochastic_hamiltonian_initialized)
   {
     walker_abs = static_cast<double>(stochastic_hamiltonian_state.TotalAbsWalkerCount());
     walker_one_body_targets = static_cast<double>(stochastic_hamiltonian_state.one_body.size());
     walker_two_body_targets = static_cast<double>(stochastic_hamiltonian_state.two_body.size());
+    walker_quantum = stochastic_hamiltonian_state.quantum;
+    walker_refinement_count = stochastic_hamiltonian_state.refinement_count;
   }
-  imsrg_mpi::AllreduceInPlace(walker_abs);
   imsrg_mpi::AllreduceInPlace(walker_one_body_targets);
   imsrg_mpi::AllreduceInPlace(walker_two_body_targets);
   if (imsrg_mpi::Enabled() && !imsrg_mpi::IsRoot())
@@ -1458,6 +1578,8 @@ void IMSRGSolver::WriteFlowStatus(std::ostream &f)
       << std::setprecision(fprecision)
       << std::setw(12) << std::setprecision(3) << profiler.GetTimes()["real"]
       << std::setw(12) << std::setprecision(3) << profiler.CheckMem()["RSS"] / 1024. << " / " << std::skipws << profiler.MaxMemUsage() / 1024. << std::fixed
+      << std::setw(16) << std::setprecision(fprecision) << walker_quantum
+      << std::setw(10) << std::setprecision(0) << walker_refinement_count
       << std::endl;
   }
 }
@@ -1502,6 +1624,8 @@ void IMSRGSolver::WriteFlowStatusHeader(std::ostream &f)
       << std::setw(10) << std::setprecision(fprecision) << "W2_tgt"
       << std::setw(16) << std::setprecision(fprecision) << "Walltime (s)"
       << std::setw(19) << std::setprecision(fprecision) << "Memory (MB)"
+      << std::setw(16) << std::setprecision(fprecision) << "quantum"
+      << std::setw(10) << std::setprecision(fprecision) << "N_refine"
       << std::endl;
     for (int x = 0; x < 211; x++)
       f << "-";

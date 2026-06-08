@@ -53,8 +53,11 @@ namespace stochastic_imsrg
   struct HamiltonianWalkerState
   {
     double quantum = 0.0;
+    double initial_quantum = 0.0;
     std::uint64_t seed = 0;
     std::uint64_t requested_walkers = 0;
+    int refinement_count = 0;
+    int last_refine_step = 0;
     std::vector<OneBodyMatrixWalker> one_body;
     std::vector<TwoBodyMatrixWalker> two_body;
 
@@ -66,6 +69,8 @@ namespace stochastic_imsrg
     void ApplyDerivativeSpawn(const Operator& dH, double ds, int step);
     void ApplyDeltaWalkers(const std::vector<OneBodyDeltaWalker>& one_body_deltas,
                            const std::vector<TwoBodyDeltaWalker>& two_body_deltas);
+    double CurrentIndependentOneTwoBodyL1(const Operator& op) const;
+    void RefineQuantumFromOperator(const Operator& op, double new_quantum, int step);
 
     std::uint64_t TotalAbsWalkerCount() const;
   };

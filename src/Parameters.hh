@@ -84,7 +84,7 @@ std::map<std::string,std::string> Parameters::string_par = {
   {"mpi_imsrg2",		"false"},	// use experimental MPI implementation for scalar IMSRG(2)
   {"imsrg2_commutator_backend", "matrix"},      // matrix or event backend for scalar IMSRG(2) commutators
   {"imsrg_flow_backend",	"deterministic"}, // deterministic, stochastic_walkers, or stochastic_spawn
-  {"stochastic_imsrg_quantum",	"fixed"},      // v1 stochastic IMSRG supports fixed quantum only
+  {"stochastic_imsrg_quantum",	"fixed"},      // fixed or adaptive stochastic Hamiltonian walker quantum
   {"nucleon_mass_correction",	"false"},	// include effect of proton-neutron mass splitting
   {"hunter_gatherer",	        "false"},	// use hunter-gatherer approach to splitting omega
   {"relativistic_correction",   "false"},       // include the p^4 relativistic correction to the kinetic energy
@@ -126,6 +126,8 @@ std::map<std::string,double> Parameters::double_par = {
   {"dE3max",		  99},  // cut on energies which limits the 3-body states considered in IMSRG(3) commutators
   {"OccNat3Cut",	  -1},  // cut on natural orbital occupations which limits the 3-body states considered in IMSRG(3) commutators
   {"threebody_threshold",  0},   // when the norm of A or B is below threebody_threshold, don't use IMSRG(3) in evaluating [A,B].
+  {"stochastic_imsrg_refine_factor", 10.0},
+  {"stochastic_imsrg_refine_eta", 1e-2},
 
 };
 
@@ -150,6 +152,9 @@ std::map<std::string,int> Parameters::int_par = {
   {"emax_3body_imsrg",        -1}, // emax truncation for the 3-body operators in the imsrg part (default: emax_imsrg)
   {"stochastic_imsrg_initial_walkers", 100000},
   {"stochastic_imsrg_seed", 5489},
+  {"stochastic_imsrg_refine_interval", 10},
+  {"stochastic_imsrg_max_refinements", 2},
+  {"stochastic_imsrg_max_walkers", 0},
 };
 
 std::map<std::string,std::vector<std::string>> Parameters::vec_par = {

@@ -71,6 +71,12 @@ class IMSRGSolver
   bool stochastic_hamiltonian_initialized;
   std::uint64_t stochastic_initial_walkers;
   std::uint64_t stochastic_seed;
+  bool stochastic_adaptive_quantum;
+  double stochastic_refine_factor;
+  double stochastic_refine_eta;
+  int stochastic_refine_interval;
+  int stochastic_max_refinements;
+  std::uint64_t stochastic_max_walkers;
   stochastic_imsrg::HamiltonianWalkerState stochastic_hamiltonian_state;
   std::shared_ptr<Operator> stochastic_H0;
 
@@ -114,8 +120,12 @@ class IMSRGSolver
   void Solve_stochastic_flow_euler();
   void EnableStochasticHamiltonianWalkers(std::uint64_t nwalkers, std::uint64_t seed);
   void EnableStochasticSpawnFlow(std::uint64_t nwalkers, std::uint64_t seed);
+  void SetStochasticQuantumMode(std::string mode);
+  void SetStochasticQuantumRefinement(double factor, double eta, int interval,
+                                      int max_refinements, std::uint64_t max_walkers);
   void InitializeStochasticHamiltonianWalkers();
   void ProjectFlowingHamiltonianToStochasticWalkers();
+  void MaybeRefineStochasticQuantum();
 
   Operator Transform(Operator& OpIn);
   Operator Transform(Operator&& OpIn);

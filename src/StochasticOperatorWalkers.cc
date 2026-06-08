@@ -298,12 +298,15 @@ namespace stochastic_imsrg
 
     requested_walkers = initial_walkers;
     seed = rng_seed;
+    refinement_count = 0;
+    last_refine_step = 0;
 
     const double l1 = LocalIndependentOneTwoBodyL1(op);
     if (!(l1 > 0.0))
       Fail("cannot initialize stochastic Hamiltonian walkers: OneBody/TwoBody L1 norm is zero.");
 
     quantum = l1 / static_cast<double>(initial_walkers);
+    initial_quantum = quantum;
     ProjectFromOperator(op, 0);
   }
 
@@ -490,6 +493,26 @@ namespace stochastic_imsrg
     IMSRGProfiler::counter["StochasticIMSRG_OneBodyWalkerTargetsAfterDelta"] += static_cast<int>(one_body.size());
     IMSRGProfiler::counter["StochasticIMSRG_TwoBodyWalkerTargetsAfterDelta"] += static_cast<int>(two_body.size());
     IMSRGProfiler::timer["StochasticIMSRG_ApplyDeltaWalkers"] += omp_get_wtime() - t_start;
+  }
+
+  double HamiltonianWalkerState::CurrentIndependentOneTwoBodyL1(const Operator& op) const
+  {
+    return LocalIndependentOneTwoBodyL1(op);
+  }
+
+  void HamiltonianWalkerState::RefineQuantumFromOperator(const Operator& op,
+                                                         double new_quantum,
+                                                         int step)
+  {
+    if (!(new_quantum > 0.0))
+      Fail("new stochastic Hamiltonian walker quantum must be positive.");
+    if (quantum > 0.0 && !(new_quantum < quantum))
+      return;
+
+    const double t_start = omp_get_wtime();
+    quantum = new_quantum;
+    ProjectFromOperator(op, step);
+    IMSRGProfiler::timer["StochasticIMSRG_QuantumRefinementProject"] += omp_get_wtime() - t_start;
   }
 
   std::uint64_t HamiltonianWalkerState::TotalAbsWalkerCount() const
