@@ -30,6 +30,8 @@
 /tns/xuxinyu/include/RPA.hh
 /tns/xuxinyu/include/ReadWrite.hh
 /tns/xuxinyu/include/ReferenceImplementations.hh
+/tns/xuxinyu/include/StochasticEventIMSRG2.hh
+/tns/xuxinyu/include/StochasticOperatorWalkers.hh
 /tns/xuxinyu/include/TensorCommutators.hh
 /tns/xuxinyu/include/ThreeBodyME.hh
 /tns/xuxinyu/include/ThreeBodyStorage.hh

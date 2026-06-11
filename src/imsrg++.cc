@@ -177,6 +177,9 @@ int main(int argc, char** argv)
   std::string imsrg2_commutator_backend = parameters.s("imsrg2_commutator_backend");
   std::string imsrg_flow_backend = parameters.s("imsrg_flow_backend");
   std::string stochastic_imsrg_quantum = parameters.s("stochastic_imsrg_quantum");
+  bool stochastic_channel_sampling = parameters.s("stochastic_channel_sampling") == "true";
+  bool stochastic_channel_diagnostics = parameters.s("stochastic_channel_diagnostics") == "true";
+  bool stochastic_channel_coalesce_samples = parameters.s("stochastic_channel_coalesce_samples") == "true";
   bool freeze_occupations = parameters.s("freeze_occupations")=="true";
   bool discard_no2b_from_3n = parameters.s("discard_no2b_from_3n")=="true";
   bool hunter_gatherer = parameters.s("hunter_gatherer") == "true";
@@ -224,6 +227,9 @@ int main(int argc, char** argv)
   int stochastic_imsrg_refine_interval = parameters.i("stochastic_imsrg_refine_interval");
   int stochastic_imsrg_max_refinements = parameters.i("stochastic_imsrg_max_refinements");
   int stochastic_imsrg_max_walkers = parameters.i("stochastic_imsrg_max_walkers");
+  int stochastic_channel_samples = parameters.i("stochastic_channel_samples");
+  int stochastic_channel_min_samples = parameters.i("stochastic_channel_min_samples");
+  int stochastic_channel_exact_threshold = parameters.i("stochastic_channel_exact_threshold");
 //  if ( not ( eMax_imsrg==-1 and e2Max_imsrg==-1 and e3Max_imsrg==-1 ) )
 //  {
 //    if ( eMax_imsrg==-1 ) eMax_imsrg = eMax;
@@ -250,6 +256,7 @@ int main(int argc, char** argv)
   double threebody_threshold = parameters.d("threebody_threshold");
   double stochastic_imsrg_refine_factor = parameters.d("stochastic_imsrg_refine_factor");
   double stochastic_imsrg_refine_eta = parameters.d("stochastic_imsrg_refine_eta");
+  double stochastic_channel_uniform_mix = parameters.d("stochastic_channel_uniform_mix");
 
   std::vector<std::string> opnames = parameters.v("Operators");
   std::vector<std::string> opsfromfile = parameters.v("OperatorsFromFile");
@@ -310,6 +317,14 @@ int main(int argc, char** argv)
       fail_input("stochastic_imsrg_max_refinements must be non-negative.");
     if (stochastic_imsrg_max_walkers < 0)
       fail_input("stochastic_imsrg_max_walkers must be non-negative.");
+    if (stochastic_channel_samples <= 0)
+      fail_input("stochastic_channel_samples must be positive.");
+    if (stochastic_channel_min_samples <= 0)
+      fail_input("stochastic_channel_min_samples must be positive.");
+    if (stochastic_channel_exact_threshold < 0)
+      fail_input("stochastic_channel_exact_threshold must be non-negative.");
+    if (stochastic_channel_uniform_mix < 0.0 || stochastic_channel_uniform_mix >= 1.0)
+      fail_input("stochastic_channel_uniform_mix must satisfy 0 <= value < 1.");
     if (IMSRG3 || imsrg3_at_end || perturbative_triples)
       fail_input("imsrg_flow_backend=stochastic_spawn requires IMSRG3=false, imsrg3_at_end=false, and perturbative_triples=false.");
     if (hunter_gatherer)
@@ -1234,6 +1249,14 @@ int main(int argc, char** argv)
         stochastic_imsrg_refine_interval,
         stochastic_imsrg_max_refinements,
         static_cast<std::uint64_t>(stochastic_imsrg_max_walkers));
+    imsrgsolver.SetStochasticChannelSampling(
+        stochastic_channel_sampling,
+        static_cast<std::uint64_t>(stochastic_channel_samples),
+        stochastic_channel_min_samples,
+        stochastic_channel_exact_threshold,
+        stochastic_channel_uniform_mix,
+        stochastic_channel_diagnostics,
+        stochastic_channel_coalesce_samples);
   }
 
   BCH::SetUseBruecknerBCH(use_brueckner_bch);

@@ -1,0 +1,75 @@
+#!/bin/bash
+#SBATCH -A xuxinyu
+#SBATCH -J walker_chopt_N1e9
+#SBATCH --partition=c128m512
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=64
+#SBATCH --output=/tns/xuxinyu/IMSRG-MPI/imsrg_log/walker_channel_opt_N1000000000.%j
+#SBATCH --time=99-00:00:00
+
+cd $SLURM_SUBMIT_DIR
+echo JOB_ID=$SLURM_JOB_ID
+echo HOST=$(hostname)
+echo START=$(date -Is)
+echo OMP_NUM_THREADS=64
+export OMP_NUM_THREADS=64
+
+if [ -x /usr/bin/time ]; then
+  /usr/bin/time -v python3 work/scripts/walker.py \
+    --profile force \
+    --exe build/src/imsrg++ \
+    --omp 64 \
+    --np 1 \
+    --walkers 1000000000 \
+    --seeds 7 \
+    --smax 2 \
+    --ds 0.5 \
+    --dsmax 0.5 \
+    stochastic_channel_sampling=true \
+    stochastic_channel_diagnostics=true \
+    stochastic_channel_coalesce_samples=true \
+    stochastic_channel_samples=1000000 \
+    stochastic_channel_min_samples=4 \
+    stochastic_channel_exact_threshold=64 \
+    stochastic_channel_uniform_mix=0.05
+elif [ -x /bin/time ]; then
+  /bin/time -v python3 work/scripts/walker.py \
+    --profile force \
+    --exe build/src/imsrg++ \
+    --omp 64 \
+    --np 1 \
+    --walkers 1000000000 \
+    --seeds 7 \
+    --smax 2 \
+    --ds 0.5 \
+    --dsmax 0.5 \
+    stochastic_channel_sampling=true \
+    stochastic_channel_diagnostics=true \
+    stochastic_channel_coalesce_samples=true \
+    stochastic_channel_samples=1000000 \
+    stochastic_channel_min_samples=4 \
+    stochastic_channel_exact_threshold=64 \
+    stochastic_channel_uniform_mix=0.05
+else
+  time python3 work/scripts/walker.py \
+    --profile force \
+    --exe build/src/imsrg++ \
+    --omp 64 \
+    --np 1 \
+    --walkers 1000000000 \
+    --seeds 7 \
+    --smax 2 \
+    --ds 0.5 \
+    --dsmax 0.5 \
+    stochastic_channel_sampling=true \
+    stochastic_channel_diagnostics=true \
+    stochastic_channel_coalesce_samples=true \
+    stochastic_channel_samples=1000000 \
+    stochastic_channel_min_samples=4 \
+    stochastic_channel_exact_threshold=64 \
+    stochastic_channel_uniform_mix=0.05
+fi
+status=$?
+echo END=$(date -Is)
+exit $status

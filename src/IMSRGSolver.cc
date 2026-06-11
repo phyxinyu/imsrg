@@ -41,6 +41,7 @@ IMSRGSolver::IMSRGSolver()
       stochastic_initial_walkers(0), stochastic_seed(0),
       stochastic_adaptive_quantum(false), stochastic_refine_factor(10.0), stochastic_refine_eta(1e-2),
       stochastic_refine_interval(10), stochastic_max_refinements(2), stochastic_max_walkers(0),
+      stochastic_channel_sampling(),
       /*pert_triples_this_omega(0),pert_triples_sum(0),*/ ode_monitor(*this), ode_mode("H"), ode_e_abs(1e-6), ode_e_rel(1e-6)
 {
 }
@@ -55,6 +56,7 @@ IMSRGSolver::IMSRGSolver(Operator &H_in)
       stochastic_initial_walkers(0), stochastic_seed(0),
       stochastic_adaptive_quantum(false), stochastic_refine_factor(10.0), stochastic_refine_eta(1e-2),
       stochastic_refine_interval(10), stochastic_max_refinements(2), stochastic_max_walkers(0),
+      stochastic_channel_sampling(),
       /*pert_triples_this_omega(0),pert_triples_sum(0),*/ ode_monitor(*this), ode_mode("H"), ode_e_abs(1e-6), ode_e_rel(1e-6)
 {
   Eta.Erase();
@@ -280,6 +282,30 @@ void IMSRGSolver::SetStochasticQuantumRefinement(double factor, double eta,
   stochastic_refine_interval = interval;
   stochastic_max_refinements = max_refinements;
   stochastic_max_walkers = max_walkers;
+}
+
+void IMSRGSolver::SetStochasticChannelSampling(bool enabled, std::uint64_t samples,
+                                               int min_samples, int exact_threshold,
+                                               double uniform_mix, bool diagnostics,
+                                               bool coalesce_samples)
+{
+  if (samples == 0 || min_samples <= 0 || exact_threshold < 0 ||
+      uniform_mix < 0.0 || uniform_mix >= 1.0)
+  {
+    const std::string message =
+        "invalid stochastic channel sampling parameters: samples>0, min_samples>0, exact_threshold>=0, 0<=uniform_mix<1 are required.";
+    if (imsrg_mpi::Enabled())
+      imsrg_mpi::Abort(message);
+    throw std::runtime_error(message);
+  }
+
+  stochastic_channel_sampling.enabled = enabled;
+  stochastic_channel_sampling.diagnostics = diagnostics;
+  stochastic_channel_sampling.coalesce_samples = coalesce_samples;
+  stochastic_channel_sampling.samples = samples;
+  stochastic_channel_sampling.min_samples = min_samples;
+  stochastic_channel_sampling.exact_threshold = exact_threshold;
+  stochastic_channel_sampling.uniform_mix = uniform_mix;
 }
 
 void IMSRGSolver::InitializeStochasticHamiltonianWalkers()
@@ -909,7 +935,8 @@ void IMSRGSolver::Solve_stochastic_flow_euler()
     s += step_size;
 
     const double dEds = StochasticEventIMSRG2::SpawnIMSRG2Delta(
-        Eta, FlowingOps[0], stochastic_hamiltonian_state, step_size, istep);
+        Eta, FlowingOps[0], stochastic_hamiltonian_state, step_size, istep,
+        stochastic_channel_sampling);
     const double zero_body = FlowingOps[0].ZeroBody + step_size * dEds;
     stochastic_hamiltonian_state.ReconstructInto(FlowingOps[0], zero_body);
 

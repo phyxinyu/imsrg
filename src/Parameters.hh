@@ -85,6 +85,9 @@ std::map<std::string,std::string> Parameters::string_par = {
   {"imsrg2_commutator_backend", "matrix"},      // matrix or event backend for scalar IMSRG(2) commutators
   {"imsrg_flow_backend",	"deterministic"}, // deterministic, stochastic_walkers, or stochastic_spawn
   {"stochastic_imsrg_quantum",	"fixed"},      // fixed or adaptive stochastic Hamiltonian walker quantum
+  {"stochastic_channel_sampling", "false"},     // sample comm222_pp_hh channel intermediates in stochastic_spawn
+  {"stochastic_channel_diagnostics", "false"},  // print sampled comm222_pp_hh diagnostics each flow step
+  {"stochastic_channel_coalesce_samples", "true"}, // combine repeated sampled intermediates before spawning
   {"nucleon_mass_correction",	"false"},	// include effect of proton-neutron mass splitting
   {"hunter_gatherer",	        "false"},	// use hunter-gatherer approach to splitting omega
   {"relativistic_correction",   "false"},       // include the p^4 relativistic correction to the kinetic energy
@@ -128,6 +131,7 @@ std::map<std::string,double> Parameters::double_par = {
   {"threebody_threshold",  0},   // when the norm of A or B is below threebody_threshold, don't use IMSRG(3) in evaluating [A,B].
   {"stochastic_imsrg_refine_factor", 10.0},
   {"stochastic_imsrg_refine_eta", 1e-2},
+  {"stochastic_channel_uniform_mix", 0.05},
 
 };
 
@@ -155,6 +159,9 @@ std::map<std::string,int> Parameters::int_par = {
   {"stochastic_imsrg_refine_interval", 10},
   {"stochastic_imsrg_max_refinements", 2},
   {"stochastic_imsrg_max_walkers", 0},
+  {"stochastic_channel_samples", 1000000},
+  {"stochastic_channel_min_samples", 4},
+  {"stochastic_channel_exact_threshold", 64},
 };
 
 std::map<std::string,std::vector<std::string>> Parameters::vec_par = {

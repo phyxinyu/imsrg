@@ -31,6 +31,7 @@
 #include "IMSRGProfiler.hh"
 #include "ReadWrite.hh"
 #include "StochasticOperatorWalkers.hh"
+#include "StochasticEventIMSRG2.hh"
 
 //using namespace std;
 
@@ -77,6 +78,7 @@ class IMSRGSolver
   int stochastic_refine_interval;
   int stochastic_max_refinements;
   std::uint64_t stochastic_max_walkers;
+  StochasticEventIMSRG2::ChannelSamplingOptions stochastic_channel_sampling;
   stochastic_imsrg::HamiltonianWalkerState stochastic_hamiltonian_state;
   std::shared_ptr<Operator> stochastic_H0;
 
@@ -123,6 +125,10 @@ class IMSRGSolver
   void SetStochasticQuantumMode(std::string mode);
   void SetStochasticQuantumRefinement(double factor, double eta, int interval,
                                       int max_refinements, std::uint64_t max_walkers);
+  void SetStochasticChannelSampling(bool enabled, std::uint64_t samples,
+                                    int min_samples, int exact_threshold,
+                                    double uniform_mix, bool diagnostics,
+                                    bool coalesce_samples);
   void InitializeStochasticHamiltonianWalkers();
   void ProjectFlowingHamiltonianToStochasticWalkers();
   void MaybeRefineStochasticQuantum();

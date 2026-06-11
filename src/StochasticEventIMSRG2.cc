@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <deque>
 #include <initializer_list>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -449,6 +450,409 @@ namespace
     }
   }
 
+  struct Sampled222Choice
+  {
+    int ab;
+    double occ_weight;
+    double importance;
+    double probability;
+  };
+
+  struct Sampled222Path
+  {
+    const Operator* L;
+    const Operator* R;
+    int ch_bra;
+    int ch_mid;
+    int ch_ket;
+    int piece_id;
+    int set_id;
+    int side_id;
+    int sym_piece;
+    const arma::uvec* intermediate_indices;
+    const arma::vec* weights;
+    double build_sign;
+    double final_sign;
+    double path_weight;
+    std::vector<Sampled222Choice> choices;
+  };
+
+  struct Sampled222Stats
+  {
+    std::uint64_t paths_total = 0;
+    std::uint64_t paths_exact = 0;
+    std::uint64_t paths_sampled = 0;
+    std::uint64_t active_intermediates_total = 0;
+    std::uint64_t requested_samples_total = 0;
+    std::uint64_t unique_samples_total = 0;
+    std::uint64_t output_elements_visited = 0;
+    double draw_time = 0.0;
+    double exact_time = 0.0;
+    double sampled_time = 0.0;
+
+    void Add(const Sampled222Stats& other)
+    {
+      paths_total += other.paths_total;
+      paths_exact += other.paths_exact;
+      paths_sampled += other.paths_sampled;
+      active_intermediates_total += other.active_intermediates_total;
+      requested_samples_total += other.requested_samples_total;
+      unique_samples_total += other.unique_samples_total;
+      output_elements_visited += other.output_elements_visited;
+      draw_time += other.draw_time;
+      exact_time += other.exact_time;
+      sampled_time += other.sampled_time;
+    }
+  };
+
+  double IntermediateProxyWeight(const Sampled222Path& path, arma::uword index)
+  {
+    const int ab = static_cast<int>((*path.intermediate_indices)(index));
+    const double occ_weight = path.weights == nullptr ? 1.0 : (*path.weights)(index);
+    if (std::abs(occ_weight) < ModelSpace::OCC_CUT)
+      return 0.0;
+
+    ModelSpace& modelspace = *path.L->GetModelSpace();
+    TwoBodyChannel& tbc_bra = modelspace.GetTwoBodyChannel(path.ch_bra);
+    TwoBodyChannel& tbc_ket = modelspace.GetTwoBodyChannel(path.ch_ket);
+    const int nbras = static_cast<int>(tbc_bra.GetNumberKets());
+    const int nkets = static_cast<int>(tbc_ket.GetNumberKets());
+
+    double left_norm2 = 0.0;
+    for (int ibra = 0; ibra < nbras; ++ibra)
+    {
+      const double x = MatrixElement(*path.L, path.ch_bra, path.ch_mid, ibra, ab);
+      left_norm2 += x * x;
+    }
+
+    double right_norm2 = 0.0;
+    for (int iket = 0; iket < nkets; ++iket)
+    {
+      const double y = MatrixElement(*path.R, path.ch_mid, path.ch_ket, ab, iket);
+      right_norm2 += y * y;
+    }
+
+    return std::abs(occ_weight) * std::sqrt(left_norm2) * std::sqrt(right_norm2);
+  }
+
+  std::vector<Sampled222Choice> BuildSampled222Choices(const Sampled222Path& path,
+                                                       double uniform_mix)
+  {
+    std::vector<Sampled222Choice> choices;
+    choices.reserve(path.intermediate_indices->n_elem);
+
+    double total_importance = 0.0;
+    for (arma::uword iab = 0; iab < path.intermediate_indices->n_elem; ++iab)
+    {
+      const int ab = static_cast<int>((*path.intermediate_indices)(iab));
+      const double occ_weight = path.weights == nullptr ? 1.0 : (*path.weights)(iab);
+      if (std::abs(occ_weight) < ModelSpace::OCC_CUT)
+        continue;
+      const double importance = IntermediateProxyWeight(path, iab);
+      total_importance += importance;
+      choices.push_back({ab, occ_weight, importance, 0.0});
+    }
+
+    if (choices.empty())
+      return choices;
+
+    const double uniform_probability = 1.0 / static_cast<double>(choices.size());
+    if (!(total_importance > 0.0))
+    {
+      for (auto& choice : choices)
+        choice.probability = uniform_probability;
+      return choices;
+    }
+
+    for (auto& choice : choices)
+    {
+      const double importance_probability = choice.importance / total_importance;
+      choice.probability = (1.0 - uniform_mix) * importance_probability
+                         + uniform_mix * uniform_probability;
+    }
+    return choices;
+  }
+
+  void PrepareSampled222Path(Sampled222Path& path, double uniform_mix)
+  {
+    path.choices = BuildSampled222Choices(path, uniform_mix);
+    path.path_weight = 0.0;
+    for (const auto& choice : path.choices)
+      path.path_weight += choice.importance;
+  }
+
+  double Sampled222PathWeight(const Sampled222Path& path)
+  {
+    double weight = 0.0;
+    for (arma::uword iab = 0; iab < path.intermediate_indices->n_elem; ++iab)
+      weight += IntermediateProxyWeight(path, iab);
+    return weight;
+  }
+
+  void AddSampled222Path(std::vector<Sampled222Path>& paths,
+                         const Operator& L, const Operator& R,
+                         int ch_bra, int ch_mid, int ch_ket,
+                         int piece_id, int set_id, int side_id, int sym_piece,
+                         const arma::uvec& intermediate_indices, const arma::vec* weights,
+                         double build_sign, double final_sign)
+  {
+    if (intermediate_indices.n_elem == 0)
+      return;
+
+    Sampled222Path path{&L, &R, ch_bra, ch_mid, ch_ket, piece_id, set_id, side_id,
+                        sym_piece, &intermediate_indices, weights, build_sign, final_sign, 0.0, {}};
+    paths.push_back(path);
+  }
+
+  std::vector<Sampled222Path> BuildSampled222PathsForBlock(const Operator& X, const Operator& Y,
+                                                           ModelSpace& modelspace,
+                                                           int ch_bra, int ch_ket)
+  {
+    std::vector<Sampled222Path> paths;
+    const int ch_ab_XY = ch_bra;
+    const int ch_ab_YX = ch_ket;
+    TwoBodyChannel& tbc_ab_XY = modelspace.GetTwoBodyChannel(ch_ab_XY);
+    TwoBodyChannel& tbc_ab_YX = modelspace.GetTwoBodyChannel(ch_ab_YX);
+
+    const int nsym = ch_bra == ch_ket ? 2 : 1;
+    for (int sym_piece = 0; sym_piece < nsym; ++sym_piece)
+    {
+      AddSampled222Path(paths, X, Y, ch_bra, ch_ab_XY, ch_ket, 10 + sym_piece, 0, 0, sym_piece,
+                        tbc_ab_XY.GetKetIndex_pp(), nullptr, +1.0, +1.0);
+      AddSampled222Path(paths, X, Y, ch_bra, ch_ab_XY, ch_ket, 20 + sym_piece, 1, 0, sym_piece,
+                        tbc_ab_XY.GetKetIndex_hh(), &tbc_ab_XY.Ket_occ_hh, +1.0, -1.0);
+      AddSampled222Path(paths, X, Y, ch_bra, ch_ab_XY, ch_ket, 30 + sym_piece, 2, 0, sym_piece,
+                        tbc_ab_XY.GetKetIndex_hh(), &tbc_ab_XY.Ket_unocc_hh, +1.0, +1.0);
+      AddSampled222Path(paths, X, Y, ch_bra, ch_ab_XY, ch_ket, 40 + sym_piece, 3, 0, sym_piece,
+                        tbc_ab_XY.GetKetIndex_ph(), &tbc_ab_XY.Ket_unocc_ph, +1.0, +1.0);
+
+      if (ch_bra != ch_ket)
+      {
+        AddSampled222Path(paths, Y, X, ch_bra, ch_ab_YX, ch_ket, 50 + sym_piece, 0, 1, sym_piece,
+                          tbc_ab_YX.GetKetIndex_pp(), nullptr, -1.0, +1.0);
+        AddSampled222Path(paths, Y, X, ch_bra, ch_ab_YX, ch_ket, 60 + sym_piece, 1, 1, sym_piece,
+                          tbc_ab_YX.GetKetIndex_hh(), &tbc_ab_YX.Ket_occ_hh, -1.0, -1.0);
+        AddSampled222Path(paths, Y, X, ch_bra, ch_ab_YX, ch_ket, 70 + sym_piece, 2, 1, sym_piece,
+                          tbc_ab_YX.GetKetIndex_hh(), &tbc_ab_YX.Ket_unocc_hh, -1.0, +1.0);
+        AddSampled222Path(paths, Y, X, ch_bra, ch_ab_YX, ch_ket, 80 + sym_piece, 3, 1, sym_piece,
+                          tbc_ab_YX.GetKetIndex_ph(), &tbc_ab_YX.Ket_unocc_ph, -1.0, +1.0);
+      }
+    }
+
+    return paths;
+  }
+
+  std::uint64_t Sampled222PathSamples(const Sampled222Path& path,
+                                      double total_weight,
+                                      const StochasticEventIMSRG2::ChannelSamplingOptions& options)
+  {
+    if (!(total_weight > 0.0) || !(path.path_weight > 0.0))
+      return 0;
+    const double raw_samples = static_cast<double>(options.samples) * path.path_weight / total_weight;
+    const long long rounded_samples = std::llround(raw_samples);
+    const std::uint64_t weighted_samples =
+        rounded_samples > 0 ? static_cast<std::uint64_t>(rounded_samples) : 0;
+    return std::max<std::uint64_t>(static_cast<std::uint64_t>(options.min_samples), weighted_samples);
+  }
+
+  std::size_t DrawSampled222ChoiceIndex(const std::vector<Sampled222Choice>& choices,
+                                        double random_value)
+  {
+    double cumulative = 0.0;
+    for (std::size_t ichoice = 0; ichoice < choices.size(); ++ichoice)
+    {
+      cumulative += choices[ichoice].probability;
+      if (random_value < cumulative)
+        return ichoice;
+    }
+    return choices.size() - 1;
+  }
+
+  std::uint64_t Sampled222DrawKey(const SpawnContext& ctx, const Sampled222Path& path,
+                                  std::uint64_t sample)
+  {
+    return SpawnKey(ctx, TERM_COMM222_PPHH, 3, path.piece_id,
+                    {path.ch_bra, path.ch_mid, path.ch_ket, path.set_id, path.side_id, path.sym_piece},
+                    {static_cast<std::int64_t>(sample)});
+  }
+
+  std::uint64_t Sampled222OutputElements(ModelSpace& modelspace, int ch_bra, int ch_ket)
+  {
+    TwoBodyChannel& tbc_bra = modelspace.GetTwoBodyChannel(ch_bra);
+    TwoBodyChannel& tbc_ket = modelspace.GetTwoBodyChannel(ch_ket);
+    const int nbras = static_cast<int>(tbc_bra.GetNumberKets());
+    const int nkets = static_cast<int>(tbc_ket.GetNumberKets());
+    if (ch_bra == ch_ket)
+      return static_cast<std::uint64_t>(nbras) * static_cast<std::uint64_t>(nbras + 1) / 2;
+    return static_cast<std::uint64_t>(nbras) * static_cast<std::uint64_t>(nkets);
+  }
+
+  void SpawnWeighted222Choice(const Sampled222Path& path, const Sampled222Choice& choice,
+                              double scale, SpawnContext& ctx, ModelSpace& modelspace,
+                              int tid, std::int64_t count_source)
+  {
+    TwoBodyChannel& tbc_bra = modelspace.GetTwoBodyChannel(path.ch_bra);
+    TwoBodyChannel& tbc_ket = modelspace.GetTwoBodyChannel(path.ch_ket);
+    const int nbras = static_cast<int>(tbc_bra.GetNumberKets());
+    const int nkets = static_cast<int>(tbc_ket.GetNumberKets());
+    for (int ibra = 0; ibra < nbras; ++ibra)
+    {
+      const int ketmin = (path.ch_bra == path.ch_ket) ? ibra : 0;
+      for (int iket = ketmin; iket < nkets; ++iket)
+      {
+        const int row = path.sym_piece == 0 ? ibra : iket;
+        const int col = path.sym_piece == 0 ? iket : ibra;
+        const double value = path.final_sign * path.build_sign * choice.occ_weight *
+                             MatrixElement(*path.L, path.ch_bra, path.ch_mid, row, choice.ab) *
+                             MatrixElement(*path.R, path.ch_mid, path.ch_ket, choice.ab, col) *
+                             scale;
+        SpawnTwoBodyDelta(ctx, modelspace, tid, TERM_COMM222_PPHH, path.piece_id,
+                          path.ch_bra, path.ch_ket, ibra, iket, value,
+                          {row, col, path.set_id, path.side_id, choice.ab, count_source});
+      }
+    }
+  }
+
+  Sampled222Stats SpawnExact222Path(const Sampled222Path& path, SpawnContext& ctx,
+                                    ModelSpace& modelspace)
+  {
+    Sampled222Stats stats;
+    stats.paths_total = 1;
+    stats.paths_exact = 1;
+    stats.active_intermediates_total = static_cast<std::uint64_t>(path.choices.size());
+    stats.unique_samples_total = static_cast<std::uint64_t>(path.choices.size());
+    stats.output_elements_visited =
+        Sampled222OutputElements(modelspace, path.ch_bra, path.ch_ket) *
+        static_cast<std::uint64_t>(path.choices.size());
+
+    const double t_start = omp_get_wtime();
+    const int tid = omp_get_thread_num();
+    for (const auto& choice : path.choices)
+      SpawnWeighted222Choice(path, choice, 1.0, ctx, modelspace, tid, 0);
+    stats.exact_time = omp_get_wtime() - t_start;
+    return stats;
+  }
+
+  Sampled222Stats SpawnSampled222Path(const Sampled222Path& path, SpawnContext& ctx,
+                                      ModelSpace& modelspace,
+                                      const StochasticEventIMSRG2::ChannelSamplingOptions& options,
+                                      double total_weight)
+  {
+    Sampled222Stats stats;
+    stats.paths_total = 1;
+    stats.active_intermediates_total = static_cast<std::uint64_t>(path.choices.size());
+
+    const std::uint64_t nsamples = Sampled222PathSamples(path, total_weight, options);
+    if (nsamples == 0 || path.choices.empty())
+      return stats;
+
+    if (static_cast<int>(path.choices.size()) <= options.exact_threshold ||
+        nsamples >= static_cast<std::uint64_t>(path.choices.size()))
+      return SpawnExact222Path(path, ctx, modelspace);
+
+    stats.paths_sampled = 1;
+    stats.requested_samples_total = nsamples;
+    const int tid = omp_get_thread_num();
+
+    if (options.coalesce_samples)
+    {
+      const double t_draw = omp_get_wtime();
+      std::vector<std::uint64_t> counts(path.choices.size(), 0);
+      for (std::uint64_t isample = 0; isample < nsamples; ++isample)
+      {
+        const double u = UnitRandom(Sampled222DrawKey(ctx, path, isample));
+        const std::size_t ichoice = DrawSampled222ChoiceIndex(path.choices, u);
+        ++counts[ichoice];
+      }
+      stats.draw_time = omp_get_wtime() - t_draw;
+
+      const double t_spawn = omp_get_wtime();
+      for (std::size_t ichoice = 0; ichoice < path.choices.size(); ++ichoice)
+      {
+        const std::uint64_t count = counts[ichoice];
+        if (count == 0)
+          continue;
+        const Sampled222Choice& choice = path.choices[ichoice];
+        if (!(choice.probability > 0.0))
+          continue;
+        const double sample_scale =
+            static_cast<double>(count) / (static_cast<double>(nsamples) * choice.probability);
+        SpawnWeighted222Choice(path, choice, sample_scale, ctx, modelspace, tid,
+                               static_cast<std::int64_t>(count));
+        ++stats.unique_samples_total;
+      }
+      stats.output_elements_visited =
+          Sampled222OutputElements(modelspace, path.ch_bra, path.ch_ket) *
+          stats.unique_samples_total;
+      stats.sampled_time = omp_get_wtime() - t_spawn;
+      return stats;
+    }
+
+    const double t_spawn = omp_get_wtime();
+    for (std::uint64_t isample = 0; isample < nsamples; ++isample)
+    {
+      const double u = UnitRandom(Sampled222DrawKey(ctx, path, isample));
+      const std::size_t ichoice = DrawSampled222ChoiceIndex(path.choices, u);
+      const Sampled222Choice& choice = path.choices[ichoice];
+      if (!(choice.probability > 0.0))
+        continue;
+      const double sample_scale = 1.0 / (static_cast<double>(nsamples) * choice.probability);
+      SpawnWeighted222Choice(path, choice, sample_scale, ctx, modelspace, tid, 1);
+      ++stats.unique_samples_total;
+    }
+    stats.output_elements_visited =
+        Sampled222OutputElements(modelspace, path.ch_bra, path.ch_ket) *
+        stats.unique_samples_total;
+    stats.sampled_time = omp_get_wtime() - t_spawn;
+    return stats;
+  }
+
+  int SaturatingProfilerCounter(std::uint64_t value)
+  {
+    const std::uint64_t max_int = static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    return static_cast<int>(std::min(value, max_int));
+  }
+
+  void AddSaturatingProfilerCounter(const std::string& key, std::uint64_t value)
+  {
+    const int increment = SaturatingProfilerCounter(value);
+    const int current = IMSRGProfiler::counter[key];
+    const int max_int = std::numeric_limits<int>::max();
+    if (current > max_int - increment)
+      IMSRGProfiler::counter[key] = max_int;
+    else
+      IMSRGProfiler::counter[key] = current + increment;
+  }
+
+  void RecordSampled222Stats(const Sampled222Stats& stats,
+                             const StochasticEventIMSRG2::ChannelSamplingOptions& options)
+  {
+    AddSaturatingProfilerCounter("Sampled222_paths_total", stats.paths_total);
+    AddSaturatingProfilerCounter("Sampled222_paths_exact", stats.paths_exact);
+    AddSaturatingProfilerCounter("Sampled222_paths_sampled", stats.paths_sampled);
+    AddSaturatingProfilerCounter("Sampled222_active_intermediates_total", stats.active_intermediates_total);
+    AddSaturatingProfilerCounter("Sampled222_requested_samples_total", stats.requested_samples_total);
+    AddSaturatingProfilerCounter("Sampled222_unique_samples_total", stats.unique_samples_total);
+    AddSaturatingProfilerCounter("Sampled222_output_elements_visited", stats.output_elements_visited);
+
+    IMSRGProfiler::timer["Sampled222_DrawSamples"] += stats.draw_time;
+    IMSRGProfiler::timer["Sampled222_SpawnExact"] += stats.exact_time;
+    IMSRGProfiler::timer["Sampled222_SpawnSampled"] += stats.sampled_time;
+
+    if (options.diagnostics && (!imsrg_mpi::Enabled() || imsrg_mpi::IsRoot()))
+    {
+      std::cout << "Sampled222 diagnostics:"
+                << " paths_total=" << stats.paths_total
+                << " paths_exact=" << stats.paths_exact
+                << " paths_sampled=" << stats.paths_sampled
+                << " active_intermediates_total=" << stats.active_intermediates_total
+                << " requested_samples_total=" << stats.requested_samples_total
+                << " unique_samples_total=" << stats.unique_samples_total
+                << " output_elements_visited=" << stats.output_elements_visited
+                << std::endl;
+    }
+  }
+
   void Emit222ForMatrixElement(const Operator& X, const Operator& Y, SpawnContext& ctx,
                                ModelSpace& modelspace, int tid,
                                int ch_bra, int ch_ket, int ibra, int iket,
@@ -522,6 +926,53 @@ namespace
         }
       }
     }
+  }
+
+  void comm222_pp_hh_spawn_sampled(const Operator& X, const Operator& Y, const IndexCache& cache,
+                                   SpawnContext& ctx,
+                                   const StochasticEventIMSRG2::ChannelSamplingOptions& options)
+  {
+    if (X.GetParticleRank() < 2 || Y.GetParticleRank() < 2)
+      return;
+    ModelSpace& modelspace = *X.GetModelSpace();
+
+    const double t_build = omp_get_wtime();
+    std::vector<Sampled222Path> paths;
+    for (const auto& key : cache.owned_two_body_keys)
+    {
+      const int ch_bra = static_cast<int>(key[0]);
+      const int ch_ket = static_cast<int>(key[1]);
+      std::vector<Sampled222Path> block_paths =
+          BuildSampled222PathsForBlock(X, Y, modelspace, ch_bra, ch_ket);
+      paths.insert(paths.end(), block_paths.begin(), block_paths.end());
+    }
+
+    double total_weight = 0.0;
+    std::vector<Sampled222Path> active_paths;
+    active_paths.reserve(paths.size());
+    for (const auto& path : paths)
+    {
+      Sampled222Path prepared = path;
+      PrepareSampled222Path(prepared, options.uniform_mix);
+      if (prepared.path_weight > 0.0 && !prepared.choices.empty())
+      {
+        total_weight += prepared.path_weight;
+        active_paths.push_back(std::move(prepared));
+      }
+    }
+    IMSRGProfiler::timer["Sampled222_BuildPaths"] += omp_get_wtime() - t_build;
+    if (!(total_weight > 0.0))
+      return;
+
+    std::vector<Sampled222Stats> path_stats(active_paths.size());
+#pragma omp parallel for schedule(dynamic, 1)
+    for (std::size_t ipath = 0; ipath < active_paths.size(); ++ipath)
+      path_stats[ipath] = SpawnSampled222Path(active_paths[ipath], ctx, modelspace, options, total_weight);
+
+    Sampled222Stats total_stats;
+    for (const auto& stats : path_stats)
+      total_stats.Add(stats);
+    RecordSampled222Stats(total_stats, options);
   }
 
   void SpawnIntermediateSet221(const Operator& L, const Operator& R, SpawnContext& ctx,
@@ -865,7 +1316,8 @@ namespace StochasticEventIMSRG2
                           const Operator& H,
                           stochastic_imsrg::HamiltonianWalkerState& state,
                           double ds,
-                          int istep)
+                          int istep,
+                          const ChannelSamplingOptions& channel_sampling)
   {
     const double t_start = omp_get_wtime();
     if (!Eta.IsAntiHermitian() || !H.IsHermitian() ||
@@ -907,7 +1359,12 @@ namespace StochasticEventIMSRG2
     if (Commutator::comm_term_on["comm122ss"])
       comm122_spawn(Eta, H, cache, ctx);
     if (Commutator::comm_term_on["comm222_pp_hhss"])
-      comm222_pp_hh_spawn(Eta, H, cache, ctx);
+    {
+      if (channel_sampling.enabled)
+        comm222_pp_hh_spawn_sampled(Eta, H, cache, ctx, channel_sampling);
+      else
+        comm222_pp_hh_spawn(Eta, H, cache, ctx);
+    }
     if (Commutator::comm_term_on["comm221ss"])
       comm221_spawn(Eta, H, cache, ctx);
     if (Commutator::comm_term_on["comm222_phss"])
